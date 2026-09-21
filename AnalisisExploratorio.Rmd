@@ -5,10 +5,18 @@ date: "2026-09-20"
 output: pdf_document
 ---
 
-# Carga inicial de los datos
+# Proyecto Final – Segunda Entrega
 
-Los datos se leen directo de Our World in Data, así que el repositorio es
-autocontenido: no depende de rutas locales ni de subir los CSV.
+Visualización de Información
+24 de agosto de 2026
+Alcántara Zepeda Job                                                                                                                                      
+Velazquez Velazquez Sofia                                                                                                                     
+Gorostieta Jurado Ricardo André                                                                                                            
+Góngora Sánchez Castellanos Cristopher 
+
+
+## Carga inicial de los datos
+
 
 ```{r}
 mdp_df <- read.csv("https://ourworldindata.org/grapher/multidimensional-poverty-index-mpi.csv?v=1&csvType=full&useColumnShortNames=false")
@@ -39,36 +47,6 @@ head(p_df, 3)
 summary(p_df)
 ```
 
-# Nota: funciones nuevas
-
-Casi todo usa funciones que ya aparecen en los archivos previos del curso:
-`read.csv`, `str`, `dim`, `names`, `summary`, `head`, `c`, `sum`, `mean`, `min`,
-`max`, `round`, `factor`, `data.frame`, `row.names`, `paste0`, `cor`, `group_by`,
-`summarise`, `mutate`, `count`, `n`, `fct_reorder`, `%>%` y las de `ggplot2`.
-
-Hicieron falta **seis funciones nuevas**, cuatro de ellas exigidas por nombre en
-el propio análisis:
-
-| Función | Por qué no se puede evitar |
-|---|---|
-| `is.na` | Contar nulos. Aquí es central: el 95 % de la columna de pobreza son `NA`. |
-| `duplicated` | Contar filas y llaves duplicadas. |
-| `median` | La mediana se pide explícitamente; `summary` no sirve para calcularla por región. |
-| `sd` | La desviación estándar se pide explícitamente y `summary` no la da. |
-| `filter` (dplyr) | Separar países de agregados y mostrar en código de dónde sale cada país citado. |
-| `inner_join` (dplyr) | Pegar el catálogo de regiones y cruzar los dos datasets. |
-
-Se evitaron a propósito: `table` y `unique` se sustituyeron por `count`; `nrow` y
-`length` por `dim`; `class` por `str`; `quantile` e `IQR` por los cuartiles que ya
-imprime `summary`; `ifelse` por `factor`; y `select`, `distinct` y `rename` se
-evitaron armando el catálogo de regiones con `count` y `data.frame`.
-
-**Nota sobre `plyr` y `dplyr`:** ambos exportan `count`, `mutate`, `summarise`,
-`arrange` y `rename`. Si `plyr` queda por encima de `dplyr` en la ruta de
-búsqueda, `count(x, region)` se resuelve a `plyr::count` y falla con "objeto
-'region' no encontrado". Por eso no se carga `plyr` y todas las llamadas llevan
-el prefijo `dplyr::`, que hace que el código corra aunque `plyr` siga cargado de
-antes en la sesión. `::` es un operador, no una función.
 
 ```{r setup-eda, message=FALSE, warning=FALSE}
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,

@@ -5,6 +5,15 @@ author: "cris"
 date: "2026-09-20"
 output: pdf_document
 ---
+# Proyecto Final – Segunda Entrega
+
+Visualización de Información
+24 de agosto de 2026
+Alcántara Zepeda Job                                                                                                                                      
+Velazquez Velazquez Sofia                                                                                                                     
+Gorostieta Jurado Ricardo André                                                                                                            
+Góngora Sánchez Castellanos Cristopher 
+
 
 ```{r setup, include=FALSE}
 # El codigo queda oculto: este documento es el entregable. El analisis completo
