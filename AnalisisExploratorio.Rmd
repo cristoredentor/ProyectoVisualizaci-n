@@ -1,0 +1,557 @@
+---
+title: "Análisis Exploratorio"
+author: "cris"
+date: "2026-09-20"
+output: pdf_document
+---
+
+# Carga inicial de los datos
+
+Los datos se leen directo de Our World in Data, así que el repositorio es
+autocontenido: no depende de rutas locales ni de subir los CSV.
+
+```{r}
+mdp_df <- read.csv("https://ourworldindata.org/grapher/multidimensional-poverty-index-mpi.csv?v=1&csvType=full&useColumnShortNames=false")
+p_df <- read.csv("https://ourworldindata.org/grapher/share-of-population-in-extreme-poverty.csv?v=1&csvType=full&useColumnShortNames=false")
+```
+
+Primero importamos las librerías necesarias.
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+```
+
+# Primera visualización
+
+Empezamos analizando el dataframe de pobreza multidimensional.
+
+```{r}
+head(mdp_df, 3)
+summary(mdp_df)
+```
+
+Ahora el de pobreza extrema.
+
+```{r}
+head(p_df, 3)
+summary(p_df)
+```
+
+# Nota: funciones nuevas
+
+Casi todo usa funciones que ya aparecen en los archivos previos del curso:
+`read.csv`, `str`, `dim`, `names`, `summary`, `head`, `c`, `sum`, `mean`, `min`,
+`max`, `round`, `factor`, `data.frame`, `row.names`, `paste0`, `cor`, `group_by`,
+`summarise`, `mutate`, `count`, `n`, `fct_reorder`, `%>%` y las de `ggplot2`.
+
+Hicieron falta **seis funciones nuevas**, cuatro de ellas exigidas por nombre en
+el propio análisis:
+
+| Función | Por qué no se puede evitar |
+|---|---|
+| `is.na` | Contar nulos. Aquí es central: el 95 % de la columna de pobreza son `NA`. |
+| `duplicated` | Contar filas y llaves duplicadas. |
+| `median` | La mediana se pide explícitamente; `summary` no sirve para calcularla por región. |
+| `sd` | La desviación estándar se pide explícitamente y `summary` no la da. |
+| `filter` (dplyr) | Separar países de agregados y mostrar en código de dónde sale cada país citado. |
+| `inner_join` (dplyr) | Pegar el catálogo de regiones y cruzar los dos datasets. |
+
+Se evitaron a propósito: `table` y `unique` se sustituyeron por `count`; `nrow` y
+`length` por `dim`; `class` por `str`; `quantile` e `IQR` por los cuartiles que ya
+imprime `summary`; `ifelse` por `factor`; y `select`, `distinct` y `rename` se
+evitaron armando el catálogo de regiones con `count` y `data.frame`.
+
+**Nota sobre `plyr` y `dplyr`:** ambos exportan `count`, `mutate`, `summarise`,
+`arrange` y `rename`. Si `plyr` queda por encima de `dplyr` en la ruta de
+búsqueda, `count(x, region)` se resuelve a `plyr::count` y falla con "objeto
+'region' no encontrado". Por eso no se carga `plyr` y todas las llamadas llevan
+el prefijo `dplyr::`, que hace que el código corra aunque `plyr` siga cargado de
+antes en la sesión. `::` es un operador, no una función.
+
+```{r setup-eda, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 6.5, fig.height = 2.8, fig.align = "center",
+                      dpi = 200)
+
+library(ggplot2)
+library(dplyr)
+library(forcats)
+
+azul <- "#2a78d6"
+gris <- "#52514e"
+```
+
+# 1. Exploración y calidad de los datos
+
+## 1.1 Renombrado de columnas
+
+```{r}
+mpi <- mdp_df
+ext <- p_df
+
+names(mpi) <- c("pais", "codigo", "anio", "mpi", "region")
+# La sexta columna se llama region_raw porque viene casi siempre vacía:
+# OWID la rellena en las filas de población, no en las de pobreza.
+names(ext) <- c("pais", "codigo", "anio", "pobreza", "poblacion", "region_raw")
+
+names(mpi)
+names(ext)
+```
+
+## 1.2 Tamaño y tipos de variable
+
+```{r}
+dim(mpi)
+str(mpi)
+
+dim(ext)
+str(ext)
+```
+
+| Dataset | Variable | Clasificación |
+|---|---|---|
+| MPI | `pais`, `codigo` | Identificadores (nombre y código ISO) |
+| MPI | `anio` | Temporal (año entero) |
+| MPI | `mpi` | Numérica continua, escala 0-1 |
+| MPI | `region` | Categórica nominal (6 regiones OWID) |
+| Pobreza extrema | `pais`, `codigo` | Identificadores |
+| Pobreza extrema | `anio` | Temporal (año entero, admite valores negativos) |
+| Pobreza extrema | `pobreza` | Numérica continua, % bajo 3 USD/día (precios 2021) |
+| Pobreza extrema | `poblacion` | Numérica discreta (personas) |
+| Pobreza extrema | `region_raw` | Categórica nominal, casi siempre vacía |
+
+El segundo dataset es un **archivo mixto**: junta la serie de pobreza extrema con
+una serie histórica de población que llega hasta el año 10000 a.C. Eso explica su
+tamaño y casi todos sus `NA`.
+
+## 1.3 Valores nulos
+
+```{r}
+nulos_ext <- data.frame(
+  variable = names(ext),
+  nulos = c(sum(is.na(ext$pais)),      sum(is.na(ext$codigo)),
+            sum(is.na(ext$anio)),      sum(is.na(ext$pobreza)),
+            sum(is.na(ext$poblacion)), sum(is.na(ext$region_raw))),
+  vacios = c(sum(ext$pais == ""),      sum(ext$codigo == ""),
+             sum(ext$anio == ""),      sum(ext$pobreza == ""),
+             sum(ext$poblacion == ""), sum(ext$region_raw == ""))
+)
+nulos_ext$pct_nulos <- round(100 * nulos_ext$nulos / dim(ext)[1], 2)
+nulos_ext
+
+# El MPI no tiene ningún nulo.
+data.frame(variable = names(mpi),
+           nulos = c(sum(is.na(mpi$pais)), sum(is.na(mpi$codigo)),
+                     sum(is.na(mpi$anio)), sum(is.na(mpi$mpi)),
+                     sum(is.na(mpi$region))))
+```
+
+El 95 % de `pobreza` son nulos, pero **no es un defecto de los datos**: son las
+filas donde solo hay población. Se comprueba directamente:
+
+```{r}
+# ¿Las filas sin pobreza sí traen población?
+dim(ext %>% dplyr::filter(is.na(pobreza), !is.na(poblacion)))[1]
+
+# Filas que sí traen dato de pobreza.
+dim(ext %>% dplyr::filter(!is.na(pobreza)))[1]
+
+# Años negativos: la serie de población llega al 10000 a.C.
+dim(ext %>% dplyr::filter(anio < 0))[1]
+min(ext$anio)
+max(ext$anio)
+```
+
+## 1.4 Duplicados
+
+```{r}
+data.frame(
+  dataset          = c("MPI", "Pobreza extrema"),
+  llave            = c("codigo", "pais + anio"),
+  filas_duplicadas = c(sum(duplicated(mpi)), sum(duplicated(ext))),
+  llave_duplicada  = c(sum(duplicated(mpi$codigo)),
+                       sum(duplicated(ext[, c("pais", "anio")])))
+)
+```
+
+Ninguno de los dos tiene filas ni llaves duplicadas.
+
+## 1.5 Variables categóricas y agregados
+
+El dataset de pobreza extrema **mezcla países con agregados**: totales
+mundiales, regiones del Banco Mundial y desgloses urbano/rural. Hay que
+separarlos antes de cualquier análisis por país.
+
+```{r}
+# Entidades sin código ISO: son agregados y desgloses, no países.
+sin_codigo <- ext %>% dplyr::filter(!is.na(pobreza), codigo == "")
+head(dplyr::count(sin_codigo, pais), 12)
+
+# El total mundial tiene su propio código interno.
+head(ext %>% dplyr::filter(codigo == "OWID_WRL", !is.na(pobreza)), 3)
+```
+
+**Catálogo de regiones.** `region_raw` viene vacía en casi todas las filas de
+pobreza, así que se arma un catálogo país-región con las filas que sí la traen y
+se pega después. `count` sobre dos columnas devuelve las combinaciones únicas,
+que es justo lo que se necesita.
+
+```{r}
+con_region <- ext %>% dplyr::filter(region_raw != "", codigo != "")
+catalogo   <- dplyr::count(con_region, codigo, region_raw)
+catalogo   <- data.frame(codigo = catalogo$codigo, region = catalogo$region_raw)
+
+dim(catalogo)
+sum(duplicated(catalogo$codigo))   # debe ser 0: un país, una región
+dplyr::count(catalogo, region)
+```
+
+**Decisión de limpieza (justificada).** Para el análisis por país se filtran las
+filas con dato de pobreza, se excluyen las entidades sin código ISO y el total
+mundial, y se pega la región. El `inner_join` con el catálogo funciona además
+como segundo filtro: los agregados del Banco Mundial no están en él y quedan
+fuera solos.
+
+```{r}
+paises <- ext %>%
+  dplyr::filter(!is.na(pobreza), codigo != "", codigo != "OWID_WRL")
+dim(paises)[1]
+
+paises <- dplyr::inner_join(paises, catalogo, by = "codigo")
+dim(paises)[1]
+
+paste0("Países: ", dim(dplyr::count(paises, codigo))[1],
+       " | años: ", min(paises$anio), "-", max(paises$anio))
+```
+
+## 1.6 Estadísticas descriptivas
+
+Para comparar países se toma **la observación más reciente de cada uno**, porque
+el panel es muy desigual.
+
+```{r}
+ultimo <- paises %>%
+  dplyr::group_by(codigo) %>%
+  dplyr::filter(anio == max(anio)) %>%
+  dplyr::ungroup()
+
+summary(ultimo$pobreza)
+paste0("Desviación estándar: ", round(sd(ultimo$pobreza), 2))
+
+summary(mpi$mpi)
+paste0("Desviación estándar del MPI: ", round(sd(mpi$mpi), 4))
+```
+
+Para los atípicos se usa la regla 1.5 x IQR, con los cuartiles que ya da
+`summary` (posición 2 es Q1 y posición 5 es Q3; `summary` solo redondea al
+imprimir, los valores guardados son exactos).
+
+```{r}
+res <- summary(ultimo$pobreza)
+# as.numeric quita el nombre ("1st Qu."), que si no choca con los nombres de
+# fila del data.frame de abajo.
+q1  <- as.numeric(res[2])
+q3  <- as.numeric(res[5])
+inf <- q1 - 1.5 * (q3 - q1)
+sup <- q3 + 1.5 * (q3 - q1)
+
+data.frame(lim_inf = round(inf, 2), lim_sup = round(sup, 2),
+           n_bajos = sum(ultimo$pobreza < inf),
+           n_altos = sum(ultimo$pobreza > sup),
+           row.names = NULL)
+```
+
+## 1.7 Problemas de calidad detectados
+
+```{r}
+# 1) El "último dato" de cada país es de años muy distintos.
+summary(ultimo$anio)
+dim(ultimo %>% dplyr::filter(anio < 2015))[1]
+
+# 2) Cobertura desigual del panel.
+obs_por_pais <- dplyr::count(paises, pais)
+summary(obs_por_pais$n)
+dim(obs_por_pais %>% dplyr::filter(n == 1))[1]
+
+# 3) Hay años futuros: son proyecciones, no observaciones.
+dplyr::count(paises %>% dplyr::filter(anio > 2023), anio)
+
+# 4) Países que reportan exactamente 0 %.
+dim(ultimo %>% dplyr::filter(pobreza == 0))[1]
+head(ultimo %>% dplyr::filter(pobreza == 0), 9)
+```
+
+Problemas identificados, **sin corregir ninguno más allá de lo ya justificado**:
+
+1. **Archivo mixto.** El dataset junta dos series de granularidad muy distinta
+   (pobreza y población histórica). El 95 % de `NA` en `pobreza` es consecuencia
+   de eso, no un problema de calidad.
+2. **Agregados mezclados con países.** "World", las regiones del Banco Mundial y
+   los desgloses urbano/rural comparten tabla con los países. Sumar o promediar
+   sin filtrarlos daría resultados dobles.
+3. **Años negativos.** La serie de población llega al 10000 a.C. Cualquier
+   gráfica temporal sin filtrar sería ilegible.
+4. **El "último dato" no es del mismo año.** Va de 1992 a 2025, y 20 países
+   tienen su dato más reciente antes de 2015. Comparar países es comparar años
+   distintos.
+5. **Cobertura muy desigual.** La mediana es de 9 observaciones por país, pero
+   hay países con una sola.
+6. **Años futuros.** Hay datos hasta 2026, que son proyecciones y no
+   observaciones. Conviene marcarlos si se usan.
+7. **Región casi siempre vacía**, lo que obliga a construir el catálogo aparte.
+
+A diferencia del dataset de líneas nacionales, **este indicador sí es comparable
+entre países**: todos se miden contra la misma línea internacional de 3 USD al
+día a precios de 2021, ajustada por inflación y por diferencias en el costo de
+vida. Eso levanta la principal limitación que tenía el análisis anterior.
+
+# 2. Primer análisis exploratorio
+
+## Gráfica 1: distribución de la pobreza extrema
+
+Histograma: `pobreza` es la variable numérica continua central del dataset.
+
+```{r}
+ggplot(ultimo, aes(x = pobreza)) +
+  geom_histogram(binwidth = 5, fill = azul, color = "white") +
+  labs(title = "La mayoría de los países tiene pobreza extrema baja",
+       subtitle = paste0(dim(ultimo)[1], " países; dato más reciente de cada uno"),
+       x = "% de la población bajo 3 USD/día", y = "Número de países",
+       caption = "Fuente: Banco Mundial PIP, procesado por Our World in Data") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"),
+        panel.grid.minor = element_blank())
+```
+
+```{r}
+round(median(ultimo$pobreza), 2)
+round(mean(ultimo$pobreza), 2)
+
+# ¿Qué países están en los extremos?
+ultimo %>% dplyr::filter(pobreza == max(pobreza))
+dim(ultimo %>% dplyr::filter(pobreza < 1))[1]
+```
+
+**Qué muestra.** Cuántos países caen en cada rango de pobreza extrema.
+
+**Hallazgos.**
+
+* Distribución muy sesgada a la derecha: mediana 2.49 % contra media 13.78 %. La
+  mitad de los países tiene menos de 2.5 % de su población bajo la línea.
+* El máximo es la República Democrática del Congo (85.3 %). La regla 1.5 x IQR
+  marca 13 países atípicos altos, todos casos reales, no errores.
+
+## Gráfica 2: pobreza extrema por región
+
+Boxplot: cruza la categórica (`region`) con la numérica (`pobreza`), y muestra a
+la vez nivel y dispersión.
+
+```{r, fig.height=3.0}
+regiones_es <- c("Africa" = "África", "Asia" = "Asia", "Europe" = "Europa",
+                 "North America" = "Norteamérica", "Oceania" = "Oceanía",
+                 "South America" = "Sudamérica")
+conteo_region <- dplyr::count(ultimo, region)
+
+ggplot(ultimo, aes(x = fct_reorder(region, pobreza, .fun = median), y = pobreza)) +
+  geom_boxplot(fill = "#cde2fb", color = gris, outlier.shape = NA) +
+  geom_point(position = position_jitter(width = 0.15, height = 0, seed = 1),
+             color = azul, alpha = 0.6, size = 1.6) +
+  geom_text(data = conteo_region,
+            aes(x = region, y = 92, label = paste0("n = ", n)),
+            color = gris, size = 3, hjust = 1) +
+  scale_x_discrete(labels = regiones_es) +
+  coord_flip() +
+  labs(title = "África concentra casi toda la pobreza extrema",
+       subtitle = "Cada punto es un país; dato más reciente disponible",
+       x = NULL, y = "% de la población bajo 3 USD/día",
+       caption = "Fuente: Banco Mundial PIP, procesado por Our World in Data") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"),
+        panel.grid.major.y = element_blank())
+```
+
+```{r}
+ultimo %>%
+  dplyr::group_by(region) %>%
+  dplyr::summarise(paises   = dplyr::n(),
+                   mediana  = round(median(pobreza), 2),
+                   media    = round(mean(pobreza), 2),
+                   minimo   = round(min(pobreza), 2),
+                   maximo   = round(max(pobreza), 2),
+                   desv_est = round(sd(pobreza), 2))
+
+# Extremos dentro de África.
+africa <- ultimo %>% dplyr::filter(region == "Africa")
+africa %>% dplyr::filter(pobreza == min(pobreza) | pobreza == max(pobreza))
+```
+
+**Qué muestra.** Nivel y dispersión de la pobreza extrema en cada región.
+
+**Hallazgos.**
+
+* La mediana de África (36.1 %) es más de 100 veces la de Europa (0.34 %) y unas
+  17 veces la de Asia (2.07 %). Es una diferencia descriptiva, no causal.
+* África es también la más dispersa (desv. est. 24.2), con países que van de
+  cerca de 0 % a 85.3 %. No es un bloque homogéneo.
+
+## Gráfica 3: evolución mundial de la pobreza extrema
+
+El dataset trae la entidad agregada `World`, que da la serie mundial completa.
+Se usa aquí de forma deliberada, separada del análisis por país.
+
+```{r, fig.height=2.8}
+mundo <- ext %>% dplyr::filter(pais == "World", !is.na(pobreza))
+
+ggplot(mundo, aes(x = anio, y = pobreza)) +
+  geom_line(color = azul, linewidth = 0.8) +
+  geom_point(color = azul, size = 1.1) +
+  labs(title = "La pobreza extrema mundial se redujo a menos de una cuarta parte",
+       subtitle = "Porcentaje de la población mundial bajo 3 USD/día",
+       x = "Año", y = "% de la población mundial",
+       caption = "Los valores posteriores a 2023 son proyecciones.\nFuente: Banco Mundial PIP, procesado por Our World in Data") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"),
+        panel.grid.minor = element_blank())
+```
+
+```{r}
+paste0("Rango de la serie mundial: ", min(mundo$anio), "-", max(mundo$anio))
+mundo %>% dplyr::filter(anio == min(anio) | anio == 2023 | anio == max(anio))
+```
+
+**Qué muestra.** Cómo cambió el porcentaje de población mundial en pobreza
+extrema entre 1990 y 2026.
+
+**Hallazgos.**
+
+* Cae de 43.4 % en 1990 a 10.0 % en 2026, unos 33 puntos porcentuales.
+* La caída se aplana claramente en la última década, y los últimos tres puntos
+  son proyecciones, no observaciones.
+
+## Gráfica 4: MPI y pobreza extrema
+
+> Esta sección no forma parte del entregable de dos cuartillas. Se conserva
+> porque el cruce entre los dos datasets se usará en la siguiente etapa.
+
+```{r}
+comparacion <- dplyr::inner_join(mpi, ultimo, by = "codigo",
+                                 suffix = c("_mpi", "_pob"))
+comparacion$dif_anios <- comparacion$anio_pob - comparacion$anio_mpi
+comparacion$grupo <- factor(comparacion$region_mpi == "Africa",
+                            labels = c("Resto del mundo", "África"))
+
+paste0("Países en común: ", dim(comparacion)[1])
+summary(comparacion$dif_anios)
+```
+
+```{r, fig.height=3.0}
+ggplot(comparacion, aes(x = mpi, y = pobreza, color = grupo)) +
+  geom_smooth(method = "lm", se = FALSE, color = gris, linewidth = 0.6) +
+  geom_point(size = 2, alpha = 0.85) +
+  labs(title = "Los dos indicadores de pobreza se alinean bien",
+       subtitle = paste0("n = ", dim(comparacion)[1], "; Pearson = ",
+                         round(cor(comparacion$mpi, comparacion$pobreza), 2)),
+       x = "Índice de Pobreza Multidimensional (0 a 1)",
+       y = "% bajo 3 USD/día", color = NULL,
+       caption = "La recta es un ajuste lineal descriptivo, no un modelo causal.") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"), legend.position = "top",
+        panel.grid.minor = element_blank())
+```
+
+```{r}
+paste0("Pearson: ", round(cor(comparacion$mpi, comparacion$pobreza), 3),
+       " | Spearman: ",
+       round(cor(comparacion$mpi, comparacion$pobreza, method = "spearman"), 3))
+
+cercanos <- comparacion %>% dplyr::filter(dif_anios <= 2, dif_anios >= -2)
+paste0("Pearson con desfase de 2 años o menos (n = ", dim(cercanos)[1], "): ",
+       round(cor(cercanos$mpi, cercanos$pobreza), 3))
+```
+
+Con el indicador comparable entre países la asociación es bastante más fuerte
+que con las líneas nacionales (Pearson 0.63 en aquel caso). Sigue siendo una
+asociación descriptiva, no causal.
+
+# 3. Entregable escrito
+
+## 3.1 Descripción del dataset
+
+Dos datasets de Our World in Data. **MPI** (Alkire et al., 2025): 109 x 5, una
+fila por país con el Índice de Pobreza Multidimensional (0-1) de su año de
+encuesta más reciente, más código ISO, año y región. **Pobreza extrema** (Banco
+Mundial PIP): 59,371 x 6, con el porcentaje de población bajo la línea
+internacional de 3 USD al día a precios de 2021, más una serie histórica de
+población y la región. Entre ambos hay identificadores, una variable temporal
+entera, tres numéricas continuas y una categórica nominal (región, 6 niveles).
+
+## 3.2 Calidad y características de los datos
+
+Ninguno tiene filas ni llaves duplicadas, y el MPI no tiene un solo nulo. El
+segundo dataset sí: el 95 % de la columna de pobreza son `NA`, pero se verificó
+que corresponden a filas donde solo hay población, porque el archivo mezcla la
+serie de pobreza con una serie demográfica que llega al 10000 a.C. Tras
+quedarse con las filas que sí traen pobreza, excluir agregados y desgloses
+urbano/rural, y pegar el catálogo de regiones, quedan 171 países.
+
+Los problemas restantes son de comparabilidad temporal: el dato más reciente de
+cada país va de 1992 a 2025 y 20 países lo tienen antes de 2015; la cobertura es
+desigual (mediana de 9 observaciones por país); y hay valores hasta 2026 que son
+proyecciones. A diferencia de las líneas nacionales de pobreza, **este indicador
+sí es comparable entre países**, lo que levanta la limitación principal del
+análisis anterior. No se eliminó ninguna observación fuera de la separación entre
+países y agregados, que queda justificada arriba.
+
+## 3.3 Análisis exploratorio
+
+**Distribución.** Muy sesgada a la derecha: mediana 2.49 % contra media 13.78 %,
+con la mitad de los países debajo de 2.5 % y un máximo de 85.3 % en la República
+Democrática del Congo.
+
+**Por región.** África concentra casi toda la pobreza extrema: mediana 36.1 %,
+más de 100 veces la de Europa (0.34 %). Pero es a la vez la región más dispersa
+(desv. est. 24.2), con países que van de casi 0 % a 85.3 %.
+
+**Evolución mundial.** La pobreza extrema global cayó de 43.4 % en 1990 a 10.0 %
+proyectado para 2026, unos 33 puntos porcentuales, con un aplanamiento claro en
+la última década.
+
+## 3.4 Observaciones iniciales
+
+El reto principal de estos datos no es la calidad sino la **estructura**: el
+archivo mezcla dos series distintas y agregados con países, así que la separación
+previa es imprescindible y condiciona todo lo demás. El patrón más marcado es la
+concentración regional; lo más inesperado, la dispersión interna de África, que
+sola cubre casi todo el rango del indicador. Todo es descriptivo: ninguna gráfica
+permite afirmar causalidad.
+
+# 4. Posibles líneas de análisis posteriores
+
+1. **Ponderar por población.** El dataset trae la columna `poblacion`, así que se
+   puede pasar de "cuántos países" a "cuánta gente", que es la pregunta de fondo.
+2. **Caracterizar la dispersión dentro de África**, en lugar de tratarla como un
+   grupo homogéneo.
+3. **Analizar velocidad de reducción** y no solo nivel, usando los países con
+   series largas.
+4. **Profundizar el cruce MPI / pobreza extrema**, que ya da una asociación
+   fuerte, para ver qué países se salen del patrón y por qué.
+5. **Separar observaciones de proyecciones** a partir de 2024 antes de cualquier
+   conclusión sobre años recientes.
+
+# Fuentes
+
+Alkire et al. (2025) - The Global Multidimensional Poverty Index (MPI) 2025 -
+with minor processing by Our World in Data. "Multidimensional Poverty Index
+(MPI) - Most recent year" [dataset]. Retrieved September 20, 2026 from
+<https://archive.ourworldindata.org/20260909-232403/grapher/multidimensional-poverty-index-mpi.html>
+(archived on September 9, 2026).
+
+World Bank Poverty and Inequality Platform (2026) - with major processing by
+Our World in Data. "Share of population living in extreme poverty - World Bank"
+[dataset]. World Bank Poverty and Inequality Platform, "World Bank Poverty and
+Inequality Platform (PIP) 20260324_2021, 20260324_2017" [original data].
+Retrieved September 20, 2026 from
+<https://archive.ourworldindata.org/20260910-004756/grapher/share-of-population-in-extreme-poverty.html>
+(archived on September 10, 2026).
