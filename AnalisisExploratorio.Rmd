@@ -171,34 +171,34 @@ head(dplyr::count(sin_codigo, pais), 12)
 head(ext %>% dplyr::filter(codigo == "OWID_WRL", !is.na(pobreza)), 3)
 ```
 
-**Catálogo de regiones.** `region_raw` viene vacía en casi todas las filas de
-pobreza, así que se arma un catálogo país-región con las filas que sí la traen y
-se pega después. `count` sobre dos columnas devuelve las combinaciones únicas,
-que es justo lo que se necesita.
+**Nulos contra vacíos.** Las columnas numéricas marcan lo faltante como `NA`;
+las de texto, como cadena vacía `""`. Por eso `is.na()` sola reporta cero
+faltantes en `codigo` y `region_raw`, cuando en realidad hay 4,848 valores en
+blanco. Y esos blancos **no son datos perdidos, son una señal**: OWID deja el
+código y la región vacíos exactamente en las entidades que no son países.
 
 ```{r}
-con_region <- ext %>% dplyr::filter(region_raw != "", codigo != "")
-catalogo   <- dplyr::count(con_region, codigo, region_raw)
-catalogo   <- data.frame(codigo = catalogo$codigo, region = catalogo$region_raw)
-
-dim(catalogo)
-sum(duplicated(catalogo$codigo))   # debe ser 0: un país, una región
-dplyr::count(catalogo, region)
+# ¿Quiénes son las filas sin región? Ninguna es un país real.
+sin_region <- ext %>% dplyr::filter(region_raw == "")
+dim(sin_region)[1]
+head(dplyr::count(sin_region, pais), 12)
 ```
 
 **Decisión de limpieza (justificada).** Para el análisis por país se filtran las
 filas con dato de pobreza, se excluyen las entidades sin código ISO y el total
-mundial, y se pega la región. El `inner_join` con el catálogo funciona además
-como segundo filtro: los agregados del Banco Mundial no están en él y quedan
-fuera solos.
+mundial, y se exige que tengan región asignada. Ese último filtro elimina solo
+los 7 agregados regionales del Banco Mundial, que sí traen código pero no región.
 
 ```{r}
 paises <- ext %>%
   dplyr::filter(!is.na(pobreza), codigo != "", codigo != "OWID_WRL")
 dim(paises)[1]
 
-paises <- dplyr::inner_join(paises, catalogo, by = "codigo")
+paises <- paises %>% dplyr::filter(region_raw != "")
 dim(paises)[1]
+
+# Se copia a un nombre mas corto para el resto del analisis.
+paises$region <- paises$region_raw
 
 paste0("Países: ", dim(dplyr::count(paises, codigo))[1],
        " | años: ", min(paises$anio), "-", max(paises$anio))
@@ -278,7 +278,9 @@ Problemas identificados, **sin corregir ninguno más allá de lo ya justificado*
    hay países con una sola.
 6. **Años futuros.** Hay datos hasta 2026, que son proyecciones y no
    observaciones. Conviene marcarlos si se usan.
-7. **Región casi siempre vacía**, lo que obliga a construir el catálogo aparte.
+7. **La región viene vacía en 4,396 filas**, pero no por datos perdidos: OWID la
+   deja en blanco exactamente en las entidades que no son países. Ese vacío
+   funciona como señal, no como faltante.
 
 A diferencia del dataset de líneas nacionales, **este indicador sí es comparable
 entre países**: todos se miden contra la misma línea internacional de 3 USD al
@@ -472,7 +474,7 @@ segundo dataset sí: el 95 % de la columna de pobreza son `NA`, pero se verific�
 que corresponden a filas donde solo hay población, porque el archivo mezcla la
 serie de pobreza con una serie demográfica que llega al 10000 a.C. Tras
 quedarse con las filas que sí traen pobreza, excluir agregados y desgloses
-urbano/rural, y pegar el catálogo de regiones, quedan 171 países.
+urbano/rural, y exigir región asignada, quedan 171 países.
 
 Los problemas restantes son de comparabilidad temporal: el dato más reciente de
 cada país va de 1992 a 2025 y 20 países lo tienen antes de 2015; la cobertura es
