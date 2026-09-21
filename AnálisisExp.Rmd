@@ -1,13 +1,14 @@
 ---
-title: "Análisis exploratorio: pobreza extrema y pobreza multidimensional"
+title: "Proyecto Final - Segunda Entrega: EDA"
+subtitle: "Pobreza extrema y pobreza multidimensional"
 author: "cris"
 date: "2026-09-20"
 output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
-# Todo el código queda oculto: este documento es el entregable. El análisis
-# completo, con el código y sus salidas, está en AnalisisExploratorio.Rmd
+# El codigo queda oculto: este documento es el entregable. El analisis completo
+# con su codigo y salidas esta en AnalisisExploratorio.Rmd
 knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
                       fig.width = 6.5, fig.height = 2.7, fig.align = "center",
                       dpi = 200)
@@ -16,25 +17,22 @@ library(ggplot2)
 library(dplyr)
 library(forcats)
 
-# Se leen de Our World in Data para que el repositorio sea autocontenido.
 mpi <- read.csv("https://ourworldindata.org/grapher/multidimensional-poverty-index-mpi.csv?v=1&csvType=full&useColumnShortNames=false")
 ext <- read.csv("https://ourworldindata.org/grapher/share-of-population-in-extreme-poverty.csv?v=1&csvType=full&useColumnShortNames=false")
 
 names(mpi) <- c("pais", "codigo", "anio", "mpi", "region")
 names(ext) <- c("pais", "codigo", "anio", "pobreza", "poblacion", "region_raw")
 
-# Catálogo país-región: OWID llena la región en las filas de población, no en
-# las de pobreza, así que se arma aparte y se pega.
+# Catalogo pais-region: OWID llena la region en las filas de poblacion, no en
+# las de pobreza, asi que se arma aparte y se pega.
 con_region <- ext %>% dplyr::filter(region_raw != "", codigo != "")
 catalogo   <- dplyr::count(con_region, codigo, region_raw)
 catalogo   <- data.frame(codigo = catalogo$codigo, region = catalogo$region_raw)
 
-# Países reales: con dato de pobreza, con código ISO y sin el total mundial.
-paises <- ext %>%
-  dplyr::filter(!is.na(pobreza), codigo != "", codigo != "OWID_WRL")
+# Paises reales: con dato de pobreza, con codigo ISO y sin el total mundial.
+paises <- ext %>% dplyr::filter(!is.na(pobreza), codigo != "", codigo != "OWID_WRL")
 paises <- dplyr::inner_join(paises, catalogo, by = "codigo")
 
-# Para comparar países se toma la observación más reciente de cada uno.
 ultimo <- paises %>%
   dplyr::group_by(codigo) %>%
   dplyr::filter(anio == max(anio)) %>%
@@ -46,51 +44,92 @@ azul <- "#2a78d6"
 gris <- "#52514e"
 ```
 
-## 1. Los datos
+Este análisis se centra en la **pobreza extrema** del Banco Mundial,
+complementada con el **Índice de Pobreza Multidimensional (MPI)**. El indicador
+principal es el porcentaje de población que vive con menos de 3 USD al día a
+precios de 2021: una línea internacional ajustada por inflación y costo de vida,
+lo que la hace **comparable entre países**. Tras la limpieza el panel contiene
+`r dim(paises)[1]` registros de `r dim(dplyr::count(paises, codigo))[1]` países
+entre `r min(paises$anio)` y `r max(paises$anio)`. El objetivo es ver cómo se
+distribuye la pobreza extrema y cómo ha evolucionado.
 
-Dos datasets de Our World in Data, leídos directo de la fuente.
+## Análisis descriptivo inicial
 
-**Pobreza extrema** (Banco Mundial PIP): `r dim(ext)[1]` x `r dim(ext)[2]`.
-Porcentaje de población bajo la línea internacional de **3 USD al día a precios
-de 2021**, ajustada por inflación y costo de vida. Trae además población
-histórica y región OWID.
+```{r}
+u_anio <- dim(dplyr::count(paises, anio))[1]
+u_pob  <- dim(dplyr::count(paises, pobreza))[1]
+u_pbl  <- dim(dplyr::count(paises %>% dplyr::filter(!is.na(poblacion)), poblacion))[1]
+u_mpi  <- dim(dplyr::count(mpi, mpi))[1]
 
-**MPI** (Alkire et al., 2025): `r dim(mpi)[1]` x `r dim(mpi)[2]`. Una fila por
-país con el Índice de Pobreza Multidimensional, que combina privaciones en
-salud, educación y condiciones de vida en escala 0 a 1.
+tabla1 <- data.frame(
+  atributo = c("Año", "Pobreza extrema (%)", "Población (millones)", "MPI (0 a 1)"),
+  unicos   = c(u_anio, u_pob, u_pbl, u_mpi),
+  media    = round(c(mean(paises$anio), mean(paises$pobreza),
+                     mean(paises$poblacion / 1e6, na.rm = TRUE), mean(mpi$mpi)), 2),
+  sd       = round(c(sd(paises$anio), sd(paises$pobreza),
+                     sd(paises$poblacion / 1e6, na.rm = TRUE), sd(mpi$mpi)), 2),
+  mediana  = round(c(median(paises$anio), median(paises$pobreza),
+                     median(paises$poblacion / 1e6, na.rm = TRUE), median(mpi$mpi)), 2),
+  minimo   = round(c(min(paises$anio), min(paises$pobreza),
+                     min(paises$poblacion / 1e6, na.rm = TRUE), min(mpi$mpi)), 2),
+  maximo   = round(c(max(paises$anio), max(paises$pobreza),
+                     max(paises$poblacion / 1e6, na.rm = TRUE), max(mpi$mpi)), 2)
+)
 
-Entre ambos: dos identificadores, una temporal entera, tres numéricas continuas
-y una categórica nominal (región, 6 niveles).
+knitr::kable(tabla1, col.names = c("Atributo", "Valores únicos", "Media",
+             "Desv. estándar", "Mediana", "Mínimo", "Máximo"))
+```
 
-## 2. Calidad de los datos
+La media de pobreza extrema (11.62 %) **oculta una disparidad enorme**: la
+mediana es apenas 1.58 % y el rango va de 0 % a 97 %. Que la media casi
+septuplique a la mediana revela una distribución muy sesgada a la derecha, con
+pocos países concentrando los valores altos. La población es igual de asimétrica
+(mediana 10.5 millones contra media 53.8), lo que importa porque **un país no
+equivale a una persona**: promediar por país no dice cuánta gente vive en
+pobreza. El MPI muestra el mismo sesgo en su propia escala.
 
-Ninguno de los dos tiene filas ni llaves duplicadas, y el MPI no tiene un solo
-valor nulo. El de pobreza extrema sí: **el 95 % de la columna de pobreza son
-`NA`**. No es un defecto, es estructura: el archivo mezcla la serie de pobreza
-(1963-2026) con una serie demográfica que llega al **año 10000 a.C.**, y en esas
-filas antiguas solo hay población.
+## Valores faltantes
 
-Además **mezcla países con agregados**: el total mundial, las regiones del Banco
-Mundial y desgloses urbano/rural como "China (rural)". Hubo que quedarse con las
-filas con pobreza, excluir las entidades sin código ISO y el total mundial, y
-pegar un catálogo de regiones armado aparte. Quedan **`r dim(ultimo)[1]`
-países**; esa separación es la única transformación aplicada.
+```{r}
+tabla2 <- data.frame(
+  atributo = c("pais", "codigo", "anio", "pobreza", "poblacion", "region"),
+  na_crudo = c(sum(is.na(ext$pais)), sum(is.na(ext$codigo)), sum(is.na(ext$anio)),
+               sum(is.na(ext$pobreza)), sum(is.na(ext$poblacion)),
+               sum(is.na(ext$region_raw))),
+  # na.rm: comparar un NA numerico contra "" devuelve NA, no FALSE.
+  vacios   = c(sum(ext$pais == "", na.rm = TRUE), sum(ext$codigo == "", na.rm = TRUE),
+               sum(ext$anio == "", na.rm = TRUE), sum(ext$pobreza == "", na.rm = TRUE),
+               sum(ext$poblacion == "", na.rm = TRUE),
+               sum(ext$region_raw == "", na.rm = TRUE)),
+  na_limpio = c(sum(is.na(paises$pais)), sum(is.na(paises$codigo)),
+                sum(is.na(paises$anio)), sum(is.na(paises$pobreza)),
+                sum(is.na(paises$poblacion)), sum(is.na(paises$region)))
+)
+tabla2$pct_crudo <- round(100 * tabla2$na_crudo / dim(ext)[1], 1)
 
-Los problemas que persisten son de comparabilidad temporal:
+knitr::kable(tabla2[, c("atributo", "na_crudo", "pct_crudo", "vacios", "na_limpio")],
+             col.names = c("Atributo", "NA (crudo)", "% NA", "Vacíos", "NA (limpio)"))
+```
 
-* El dato más reciente de cada país va de `r min(ultimo$anio)` a
-  `r max(ultimo$anio)`, y `r dim(ultimo %>% dplyr::filter(anio < 2015))[1]`
-  países lo tienen antes de 2015. Comparar países es comparar años distintos.
-* La cobertura es desigual: mediana de 9 observaciones por país, con algunos de
-  una sola.
-* Hay valores hasta 2026 que son **proyecciones**, no observaciones.
+El archivo crudo tiene `r dim(ext)[1]` filas y **el 95.2 % de la columna de
+pobreza son `NA`**. No es un defecto sino estructura: el archivo mezcla la serie
+de pobreza (1963-2026) con una demográfica que llega al **año 10000 a.C.**, donde
+solo hay población. Lo mismo con la región, vacía en 4,396 filas porque OWID solo
+la asigna en las filas de población.
 
-A diferencia de las líneas de pobreza nacionales, este indicador **sí es
-comparable entre países**: todos se miden contra la misma línea internacional.
+Además **mezcla países con agregados**: el total mundial, regiones del Banco
+Mundial y desgloses urbano/rural como "China (rural)". Quedarse con las filas con
+pobreza, excluir las entidades sin código ISO y el total mundial, y pegar el
+catálogo de regiones deja `r dim(paises)[1]` registros donde **solo quedan 28
+faltantes**, todos de población. Esa separación es la única transformación
+aplicada.
 
-## 3. Hallazgos
+Persiste una limitación temporal: el dato más reciente de cada país va de
+`r min(ultimo$anio)` a `r max(ultimo$anio)`, con
+`r dim(ultimo %>% dplyr::filter(anio < 2015))[1]` países antes de 2015, y hay
+valores hasta 2026 que son **proyecciones**.
 
-### África concentra casi toda la pobreza extrema, pero no es un bloque
+## Hallazgos
 
 ```{r, fig.height=2.9}
 regiones_es <- c("Africa" = "África", "Asia" = "Asia", "Europe" = "Europa",
@@ -116,18 +155,14 @@ ggplot(ultimo, aes(x = fct_reorder(region, pobreza, .fun = median), y = pobreza)
         panel.grid.major.y = element_blank())
 ```
 
-La distribución está muy sesgada a la derecha: mediana
-`r round(median(ultimo$pobreza), 2)` % contra media
-`r round(mean(ultimo$pobreza), 2)` %, con la mitad de los países debajo de 2.5 %
-y una cola que llega a 85.3 % (República Democrática del Congo).
+**Gráfica 1.** Distribución de la pobreza extrema por región, dato más reciente
+de cada país.
 
 El contraste regional es enorme: la mediana de África (36.1 %) es más de **100
-veces** la de Europa (0.34 %). Pero lo más interesante no es ese contraste sino
-la **dispersión interna**: África es también la región más dispersa (desv. est.
-24.2), con países de casi 0 % a 85.3 %, así que tratarla como bloque homogéneo
-sería un error de lectura.
-
-### La pobreza extrema mundial cayó, pero el avance se aplanó
+veces** la de Europa (0.34 %). Pero el hallazgo más interesante es la
+**dispersión interna**: África es también la más dispersa (desv. est. 24.2), con
+países de casi 0 % hasta 85.3 % (República Democrática del Congo). Tratarla como
+bloque homogéneo sería un error de lectura.
 
 ```{r, fig.height=2.7}
 ggplot(mundo, aes(x = anio, y = pobreza)) +
@@ -142,36 +177,27 @@ ggplot(mundo, aes(x = anio, y = pobreza)) +
         panel.grid.minor = element_blank())
 ```
 
-La serie va de `r min(mundo$anio)` a `r max(mundo$anio)` y cae de
-`r round(mundo$pobreza[mundo$anio == 1990], 1)` % a
-`r round(mundo$pobreza[mundo$anio == 2026], 1)` %, unos 33 puntos porcentuales:
-la pobreza extrema global se redujo a menos de una cuarta parte.
+**Gráfica 2.** Evolución de la pobreza extrema mundial, 1990-2026.
 
-Pero la curva no es uniforme. El descenso es pronunciado entre 1990 y 2015 y se
-**aplana claramente en la última década**; además, los últimos tres puntos son
-proyecciones.
+La serie mundial cae de `r round(mundo$pobreza[mundo$anio == 1990], 1)` % a
+`r round(mundo$pobreza[mundo$anio == 2026], 1)` %, unos 33 puntos porcentuales.
+Pero la curva no es uniforme: el descenso es pronunciado entre 1990 y 2015 y se
+**aplana claramente en la última década**.
 
-## 4. Observaciones iniciales
+## Próximos pasos
 
-El reto principal de estos datos no es la calidad sino la **estructura**: un solo
-archivo mezcla dos series de granularidad muy distinta y agregados con países, así
-que la separación previa es imprescindible. El patrón más marcado es la
-concentración geográfica; lo más inesperado, que la región con mayor pobreza sea
-también la más heterogénea. Todo es descriptivo: ninguna gráfica permite afirmar
-causalidad.
+El reto de estos datos no es la calidad sino la **estructura**. Todo lo anterior
+es descriptivo: ninguna gráfica permite afirmar causalidad.
 
-**Líneas que abre este análisis:**
-
-1. **Ponderar por población**, usando la columna que ya trae el dataset, para
-   pasar de "cuántos países" a "cuánta gente".
-2. **Explorar la dispersión dentro de África** en vez de tratarla como un grupo.
-3. **Cruzar con el MPI**, que mide privaciones no monetarias, para ver qué países
-   se salen del patrón.
-4. **Separar observaciones de proyecciones** a partir de 2024 antes de concluir
-   nada sobre años recientes.
+Para continuar conviene **(1) ponderar por población**, usando la columna que ya
+trae el dataset, para pasar de "cuántos países" a "cuánta gente"; **(2)
+desagregar África** por subregión, dado que concentra la pobreza y es la más
+heterogénea; **(3) cruzar con el MPI** para ver qué países se salen del patrón; y
+**(4) separar observaciones de proyecciones** a partir de 2024.
 
 ## Fuentes
 
-World Bank Poverty and Inequality Platform, *Share of population living in
+World Bank Poverty and Inequality Platform (2026), *Share of population living in
 extreme poverty*; Alkire et al. (2025), *Global MPI 2025*. Ambos procesados por
-Our World in Data. Código y análisis completo en `AnalisisExploratorio.Rmd`.
+Our World in Data, recuperados el 20 de septiembre de 2026. Código completo en
+`AnalisisExploratorio.Rmd`.
