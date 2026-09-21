@@ -1,0 +1,177 @@
+---
+title: "Análisis exploratorio: pobreza extrema y pobreza multidimensional"
+author: "cris"
+date: "2026-09-20"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+# Todo el código queda oculto: este documento es el entregable. El análisis
+# completo, con el código y sus salidas, está en AnalisisExploratorio.Rmd
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.width = 6.5, fig.height = 2.7, fig.align = "center",
+                      dpi = 200)
+
+library(ggplot2)
+library(dplyr)
+library(forcats)
+
+# Se leen de Our World in Data para que el repositorio sea autocontenido.
+mpi <- read.csv("https://ourworldindata.org/grapher/multidimensional-poverty-index-mpi.csv?v=1&csvType=full&useColumnShortNames=false")
+ext <- read.csv("https://ourworldindata.org/grapher/share-of-population-in-extreme-poverty.csv?v=1&csvType=full&useColumnShortNames=false")
+
+names(mpi) <- c("pais", "codigo", "anio", "mpi", "region")
+names(ext) <- c("pais", "codigo", "anio", "pobreza", "poblacion", "region_raw")
+
+# Catálogo país-región: OWID llena la región en las filas de población, no en
+# las de pobreza, así que se arma aparte y se pega.
+con_region <- ext %>% dplyr::filter(region_raw != "", codigo != "")
+catalogo   <- dplyr::count(con_region, codigo, region_raw)
+catalogo   <- data.frame(codigo = catalogo$codigo, region = catalogo$region_raw)
+
+# Países reales: con dato de pobreza, con código ISO y sin el total mundial.
+paises <- ext %>%
+  dplyr::filter(!is.na(pobreza), codigo != "", codigo != "OWID_WRL")
+paises <- dplyr::inner_join(paises, catalogo, by = "codigo")
+
+# Para comparar países se toma la observación más reciente de cada uno.
+ultimo <- paises %>%
+  dplyr::group_by(codigo) %>%
+  dplyr::filter(anio == max(anio)) %>%
+  dplyr::ungroup()
+
+mundo <- ext %>% dplyr::filter(pais == "World", !is.na(pobreza))
+
+azul <- "#2a78d6"
+gris <- "#52514e"
+```
+
+## 1. Los datos
+
+Dos datasets de Our World in Data, leídos directo de la fuente.
+
+**Pobreza extrema** (Banco Mundial PIP): `r dim(ext)[1]` x `r dim(ext)[2]`.
+Porcentaje de población bajo la línea internacional de **3 USD al día a precios
+de 2021**, ajustada por inflación y costo de vida. Trae además población
+histórica y región OWID.
+
+**MPI** (Alkire et al., 2025): `r dim(mpi)[1]` x `r dim(mpi)[2]`. Una fila por
+país con el Índice de Pobreza Multidimensional, que combina privaciones en
+salud, educación y condiciones de vida en escala 0 a 1.
+
+Entre ambos: dos identificadores, una temporal entera, tres numéricas continuas
+y una categórica nominal (región, 6 niveles).
+
+## 2. Calidad de los datos
+
+Ninguno de los dos tiene filas ni llaves duplicadas, y el MPI no tiene un solo
+valor nulo. El de pobreza extrema sí: **el 95 % de la columna de pobreza son
+`NA`**. No es un defecto, es estructura: el archivo mezcla la serie de pobreza
+(1963-2026) con una serie demográfica que llega al **año 10000 a.C.**, y en esas
+filas antiguas solo hay población.
+
+Además **mezcla países con agregados**: el total mundial, las regiones del Banco
+Mundial y desgloses urbano/rural como "China (rural)". Hubo que quedarse con las
+filas con pobreza, excluir las entidades sin código ISO y el total mundial, y
+pegar un catálogo de regiones armado aparte. Quedan **`r dim(ultimo)[1]`
+países**; esa separación es la única transformación aplicada.
+
+Los problemas que persisten son de comparabilidad temporal:
+
+* El dato más reciente de cada país va de `r min(ultimo$anio)` a
+  `r max(ultimo$anio)`, y `r dim(ultimo %>% dplyr::filter(anio < 2015))[1]`
+  países lo tienen antes de 2015. Comparar países es comparar años distintos.
+* La cobertura es desigual: mediana de 9 observaciones por país, con algunos de
+  una sola.
+* Hay valores hasta 2026 que son **proyecciones**, no observaciones.
+
+A diferencia de las líneas de pobreza nacionales, este indicador **sí es
+comparable entre países**: todos se miden contra la misma línea internacional.
+
+## 3. Hallazgos
+
+### África concentra casi toda la pobreza extrema, pero no es un bloque
+
+```{r, fig.height=2.9}
+regiones_es <- c("Africa" = "África", "Asia" = "Asia", "Europe" = "Europa",
+                 "North America" = "Norteamérica", "Oceania" = "Oceanía",
+                 "South America" = "Sudamérica")
+conteo_region <- dplyr::count(ultimo, region)
+
+ggplot(ultimo, aes(x = fct_reorder(region, pobreza, .fun = median), y = pobreza)) +
+  geom_boxplot(fill = "#cde2fb", color = gris, outlier.shape = NA) +
+  geom_point(position = position_jitter(width = 0.15, height = 0, seed = 1),
+             color = azul, alpha = 0.6, size = 1.6) +
+  geom_text(data = conteo_region,
+            aes(x = region, y = 92, label = paste0("n = ", n)),
+            color = gris, size = 3, hjust = 1) +
+  scale_x_discrete(labels = regiones_es) +
+  coord_flip() +
+  labs(title = "África concentra casi toda la pobreza extrema",
+       subtitle = "Cada punto es un país; dato más reciente disponible",
+       x = NULL, y = "% de la población bajo 3 USD/día",
+       caption = "Fuente: Banco Mundial PIP, procesado por Our World in Data") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"),
+        panel.grid.major.y = element_blank())
+```
+
+La distribución está muy sesgada a la derecha: mediana
+`r round(median(ultimo$pobreza), 2)` % contra media
+`r round(mean(ultimo$pobreza), 2)` %, con la mitad de los países debajo de 2.5 %
+y una cola que llega a 85.3 % (República Democrática del Congo).
+
+El contraste regional es enorme: la mediana de África (36.1 %) es más de **100
+veces** la de Europa (0.34 %). Pero lo más interesante no es ese contraste sino
+la **dispersión interna**: África es también la región más dispersa (desv. est.
+24.2), con países de casi 0 % a 85.3 %, así que tratarla como bloque homogéneo
+sería un error de lectura.
+
+### La pobreza extrema mundial cayó, pero el avance se aplanó
+
+```{r, fig.height=2.7}
+ggplot(mundo, aes(x = anio, y = pobreza)) +
+  geom_line(color = azul, linewidth = 0.8) +
+  geom_point(color = azul, size = 1.1) +
+  labs(title = "De 43 % a 10 % en poco más de tres décadas",
+       subtitle = "Porcentaje de la población mundial bajo 3 USD/día",
+       x = "Año", y = "% de la población mundial",
+       caption = "Los valores posteriores a 2023 son proyecciones.\nFuente: Banco Mundial PIP, procesado por Our World in Data") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"),
+        panel.grid.minor = element_blank())
+```
+
+La serie va de `r min(mundo$anio)` a `r max(mundo$anio)` y cae de
+`r round(mundo$pobreza[mundo$anio == 1990], 1)` % a
+`r round(mundo$pobreza[mundo$anio == 2026], 1)` %, unos 33 puntos porcentuales:
+la pobreza extrema global se redujo a menos de una cuarta parte.
+
+Pero la curva no es uniforme. El descenso es pronunciado entre 1990 y 2015 y se
+**aplana claramente en la última década**; además, los últimos tres puntos son
+proyecciones.
+
+## 4. Observaciones iniciales
+
+El reto principal de estos datos no es la calidad sino la **estructura**: un solo
+archivo mezcla dos series de granularidad muy distinta y agregados con países, así
+que la separación previa es imprescindible. El patrón más marcado es la
+concentración geográfica; lo más inesperado, que la región con mayor pobreza sea
+también la más heterogénea. Todo es descriptivo: ninguna gráfica permite afirmar
+causalidad.
+
+**Líneas que abre este análisis:**
+
+1. **Ponderar por población**, usando la columna que ya trae el dataset, para
+   pasar de "cuántos países" a "cuánta gente".
+2. **Explorar la dispersión dentro de África** en vez de tratarla como un grupo.
+3. **Cruzar con el MPI**, que mide privaciones no monetarias, para ver qué países
+   se salen del patrón.
+4. **Separar observaciones de proyecciones** a partir de 2024 antes de concluir
+   nada sobre años recientes.
+
+## Fuentes
+
+World Bank Poverty and Inequality Platform, *Share of population living in
+extreme poverty*; Alkire et al. (2025), *Global MPI 2025*. Ambos procesados por
+Our World in Data. Código y análisis completo en `AnalisisExploratorio.Rmd`.

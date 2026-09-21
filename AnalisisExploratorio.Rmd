@@ -1,0 +1,606 @@
+---
+title: "Análisis Explotatorio"
+author: "cris"
+date: "2026-09-20"
+output: pdf_document
+---
+
+#Carga inicial de los datos
+
+```{r}
+mdp_df <- read.csv("https://ourworldindata.org/grapher/multidimensional-poverty-index-mpi.csv?v=1&csvType=full&useColumnShortNames=false")
+p_df <- read.csv("https://ourworldindata.org/grapher/share-of-population-in-extreme-poverty.csv?v=1&csvType=full&useColumnShortNames=false")
+```
+
+primero importamos todas las librerias que vayan a ser necesarias para este análisis de datos inicial
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+```
+
+#Primera visualización
+
+Empezamos analizando el dataframe de pobreza multifactorial
+
+```{r}
+head(mdp_df,3)
+summary(mdp_df)
+```
+
+Ahora analizamos el porcentaje de índice de pobreza
+
+```{r}
+head(p_df,3)
+summary(p_df)
+```
+
+
+```{r setup-eda, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 6.5, fig.height = 2.8, fig.align = "center",
+                      dpi = 200)
+
+library(ggplot2)
+library(dplyr)
+library(forcats)
+```
+
+# 1. Exploración y calidad de los datos
+
+## 1.1 Renombrado de columnas
+
+`read.csv` convierte los nombres originales en cadenas muy largas
+(`Poverty.headcount.ratio.at.national.poverty.lines....of.population.`). El único
+cambio que se hace sobre los datos en esta etapa es **renombrar las columnas**:
+no se elimina, filtra ni transforma ninguna observación.
+
+```{r}
+# Copias de trabajo. Los data.frame originales (mdp_df, p_df) se conservan intactos.
+mpi <- mdp_df
+pov <- p_df
+
+names(mpi) <- c("pais", "codigo", "anio", "mpi", "region")
+names(pov) <- c("pais", "codigo", "anio", "pobreza")
+```
+
+## 1.2 Tamaño y tipos de variable
+
+```{r}
+# dim devuelve filas y columnas; str da el tipo de dato de cada variable.
+dim(mpi)
+str(mpi)
+
+dim(pov)
+str(pov)
+```
+
+Clasificación de las variables:
+
+| Dataset | Variable | Clasificación |
+|---|---|---|
+| MPI | `pais` | Categórica / identificador (nombre de entidad) |
+| MPI | `codigo` | Identificador (ISO alpha-3) |
+| MPI | `anio` | Temporal (año entero, no es una fecha completa) |
+| MPI | `mpi` | Numérica continua, escala 0-1 |
+| MPI | `region` | Categórica nominal (6 regiones OWID) |
+| Pobreza | `pais` | Categórica / identificador |
+| Pobreza | `codigo` | Identificador (ISO alpha-3) |
+| Pobreza | `anio` | Temporal (año entero) |
+| Pobreza | `pobreza` | Numérica continua, porcentaje 0-100 |
+
+Ninguno de los dos datasets trae una columna `Day`, así que no hay fechas
+completas: la única variable temporal es el año, y es un entero.
+
+## 1.3 Valores nulos
+
+```{r}
+# Nulos por variable. Se escribe columna por columna para no usar sapply.
+nulos_mpi <- data.frame(
+  variable = names(mpi),
+  nulos = c(sum(is.na(mpi$pais)),  sum(is.na(mpi$codigo)), sum(is.na(mpi$anio)),
+            sum(is.na(mpi$mpi)),   sum(is.na(mpi$region))),
+  # Cadenas vacías: un "" no es NA, pero también sería un dato faltante.
+  vacios = c(sum(mpi$pais == ""),  sum(mpi$codigo == ""),  sum(mpi$anio == ""),
+             sum(mpi$mpi == ""),   sum(mpi$region == ""))
+)
+nulos_mpi$pct_nulos <- round(100 * nulos_mpi$nulos / dim(mpi)[1], 2)
+nulos_mpi
+
+nulos_pov <- data.frame(
+  variable = names(pov),
+  nulos = c(sum(is.na(pov$pais)), sum(is.na(pov$codigo)),
+            sum(is.na(pov$anio)), sum(is.na(pov$pobreza))),
+  vacios = c(sum(pov$pais == ""), sum(pov$codigo == ""),
+             sum(pov$anio == ""), sum(pov$pobreza == ""))
+)
+nulos_pov$pct_nulos <- round(100 * nulos_pov$nulos / dim(pov)[1], 2)
+nulos_pov
+```
+
+## 1.4 Duplicados
+
+```{r}
+# Filas completas repetidas y llaves que deberían ser únicas.
+data.frame(
+  dataset          = c("MPI", "Pobreza nacional"),
+  llave            = c("codigo", "codigo + anio"),
+  filas_duplicadas = c(sum(duplicated(mpi)), sum(duplicated(pov))),
+  llave_duplicada  = c(sum(duplicated(mpi$codigo)),
+                       sum(duplicated(pov[, c("codigo", "anio")])))
+)
+```
+
+Ninguno de los dos archivos tiene valores nulos, cadenas vacías ni filas
+duplicadas. En MPI cada país aparece **una sola vez** (es una foto del año más
+reciente disponible para cada país); en el dataset de líneas nacionales la llave
+`codigo + anio` tampoco se repite, así que es un panel país-año sin duplicados.
+
+## 1.5 Variables categóricas
+
+```{r}
+# count da a la vez las categorías y su frecuencia: sustituye a table y unique.
+conteo_region <- dplyr::count(mpi, region)
+conteo_region
+
+# Identificadores: interesa cuántos hay distintos, no sus frecuencias.
+paste0("MPI: ", dim(dplyr::count(mpi, codigo))[1], " países distintos")
+paste0("Pobreza: ", dim(dplyr::count(pov, codigo))[1], " países distintos, años ",
+       min(pov$anio), "-", max(pov$anio))
+
+# Kosovo no trae código ISO sino un código interno de OWID.
+pov %>% dplyr::filter(pais == "Kosovo") %>% head(3)
+```
+
+## 1.6 Estadísticas descriptivas de las variables numéricas
+
+`summary` ya entrega mínimo, máximo, media, mediana y cuartiles; solo falta la
+desviación estándar, que se agrega aparte.
+
+```{r}
+summary(mpi$mpi)
+paste0("Desviación estándar del MPI: ", round(sd(mpi$mpi), 4))
+
+summary(mpi$anio)
+
+summary(pov$pobreza)
+paste0("Desviación estándar del % de pobreza: ", round(sd(pov$pobreza), 4))
+
+summary(pov$anio)
+```
+
+Para detectar atípicos se usa la **regla 1.5 x IQR**, que es exactamente el
+criterio con el que un boxplot decide hasta dónde llegan sus bigotes: se
+considera atípico todo valor fuera del intervalo
+[Q1 - 1.5.IQR, Q3 + 1.5.IQR], donde IQR = Q3 - Q1. Los cuartiles se toman de
+`summary`, que devuelve un vector con nombres donde la posición 2 es el primer
+cuartil y la 5 el tercero.
+
+```{r}
+# summary() devuelve: Min. / 1st Qu. / Median / Mean / 3rd Qu. / Max.
+# Por eso la posición 2 es Q1 y la 5 es Q3. summary solo redondea al IMPRIMIR;
+# los valores que guarda son exactos, así que los límites también lo son.
+res_mpi <- summary(mpi$mpi)
+q1_mpi  <- res_mpi[2]
+q3_mpi  <- res_mpi[5]
+inf_mpi <- q1_mpi - 1.5 * (q3_mpi - q1_mpi)
+sup_mpi <- q3_mpi + 1.5 * (q3_mpi - q1_mpi)
+
+res_pov <- summary(pov$pobreza)
+q1_pov  <- res_pov[2]
+q3_pov  <- res_pov[5]
+inf_pov <- q1_pov - 1.5 * (q3_pov - q1_pov)
+sup_pov <- q3_pov + 1.5 * (q3_pov - q1_pov)
+
+data.frame(
+  variable = c("MPI", "% bajo línea nacional"),
+  lim_inf  = c(round(inf_mpi, 3), round(inf_pov, 3)),
+  lim_sup  = c(round(sup_mpi, 3), round(sup_pov, 3)),
+  n_bajos  = c(sum(mpi$mpi < inf_mpi), sum(pov$pobreza < inf_pov)),
+  n_altos  = c(sum(mpi$mpi > sup_mpi), sum(pov$pobreza > sup_pov)),
+  row.names = NULL
+)
+```
+
+Este cálculo es el que **justifica no borrar ninguna observación**, que es una
+decisión que el análisis exige sustentar:
+
+* El MPI **no tiene ningún atípico**: su límite superior (0.541) queda por
+  encima del máximo observado (0.517, Chad). Es decir, los países con más
+  pobreza multidimensional son extremos, pero no lo suficiente como para
+  separarse del resto de la distribución. El límite inferior sale negativo
+  (-0.312), que en una escala de 0 a 1 simplemente significa que por abajo no
+  puede haber atípicos.
+* El porcentaje bajo línea nacional sí marca **57 valores por encima de 52.5 %**.
+  Al revisar el más extremo se ve que son países reales con pobreza muy alta, no
+  errores de captura, así que tampoco se eliminan.
+
+```{r}
+# ¿Cuál es el valor más alto de todo el panel y a qué país pertenece?
+pov %>% dplyr::filter(pobreza == max(pobreza))
+```
+
+
+## 1.7 Problemas de calidad detectados
+
+```{r}
+# 1) Años de encuesta muy dispersos dentro del dataset MPI.
+dplyr::count(mpi, anio)
+
+# 2) Cobertura desigual: número de observaciones por país en el panel de pobreza.
+obs_por_pais <- dplyr::count(pov, pais)
+summary(obs_por_pais$n)
+
+# ¿Qué país tiene la serie más larga?
+obs_por_pais %>% dplyr::filter(n == max(n))
+
+# ¿Cuántos países tienen una sola observación? (no permiten ver tendencia)
+dim(obs_por_pais %>% dplyr::filter(n == 1))[1]
+
+# 3) El valor 0.0 en el porcentaje de pobreza y los años previos de ese país.
+pov %>% dplyr::filter(pobreza == 0)
+pov %>% dplyr::filter(pais == "China", anio >= 2017)
+```
+
+Problemas y advertencias identificados, **sin corregir ninguno en esta etapa**:
+
+1. **El MPI no es una serie temporal.** Cada país tiene un único año, y esos años
+   van de 2013 a 2023. Comparar MPI entre países es comparar encuestas de años
+   distintos; la documentación de la fuente lo llama *current margin estimate*.
+2. **Las tasas nacionales no son comparables entre países.** La propia fuente
+   (Banco Mundial / OWID) advierte que cada país define su propia línea de
+   pobreza, así que el dataset sirve para ver evolución *dentro* de un país, no
+   para hacer rankings entre países.
+3. **Cobertura temporal muy desigual.** La mediana es de 4 observaciones por país
+   y el máximo es 37 (Costa Rica). **39 de los 160 países tienen una sola
+   observación**, así que para casi una cuarta parte del panel no se puede
+   hablar de tendencia.
+4. **Un valor de 0.0 %** (China, 2020). No parece un nulo disfrazado: es el
+   último punto de una serie que venía bajando de forma continua (3.1 % en 2017,
+   1.7 % en 2018, 0.6 % en 2019). Aun así, los datos por sí solos no permiten
+   determinar si es un cero real o un redondeo, así que se deja tal cual y se
+   marca como valor a verificar con la fuente.
+5. **Un código que no es ISO**: `OWID_KOS` (Kosovo), código interno de OWID. No
+   es un error, pero rompería cualquier cruce automático con catálogos ISO.
+6. **Escalas distintas**: el MPI va de 0 a 1 y la tasa nacional de 0 a 100. No se
+   pueden graficar en un mismo eje sin reescalar.
+7. **La regla 1.5 x IQR no marca ningún atípico en el MPI.** En el porcentaje de
+   pobreza sí marca 57 valores altos, pero corresponden a países reales con
+   pobreza muy elevada, no a errores de captura. No se elimina ninguno.
+
+# 2. Primer análisis exploratorio
+
+## Gráfica 1: distribución del MPI
+
+Histograma: `mpi` es la única numérica continua del primer dataset.
+
+```{r}
+azul <- "#2a78d6"
+gris <- "#52514e"
+
+ggplot(mpi, aes(x = mpi)) +
+  geom_histogram(binwidth = 0.025, fill = azul, color = "white") +
+  labs(
+    title    = "La mayoría de los países tiene un MPI bajo",
+    subtitle = paste0(dim(mpi)[1], " países; encuestas de 2013 a 2023"),
+    x = "Índice de Pobreza Multidimensional (escala 0 a 1)",
+    y = "Número de países",
+    caption = "Fuente: Alkire et al. (2025), procesado por Our World in Data"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"),
+        panel.grid.minor = element_blank())
+```
+
+```{r}
+# Estadísticas de forma: la media muy por encima de la mediana indica sesgo.
+round(median(mpi$mpi), 3)
+round(mean(mpi$mpi), 3)
+
+# ¿Qué países están en los extremos de la distribución?
+mpi %>% dplyr::filter(mpi == min(mpi))
+mpi %>% dplyr::filter(mpi == max(mpi))
+```
+
+**Qué muestra.** Cuántos países caen en cada rango de MPI.
+
+**Hallazgos.**
+
+* Sesgo fuerte a la derecha: mediana 0.039 contra media 0.118, con la mitad de
+  los países por debajo de 0.04.
+* Extremos: Serbia (0.0004) y Chad (0.517).
+
+## Gráfica 2: MPI por región
+
+Boxplot: cruza la única categórica (`region`) con la numérica (`mpi`). Se
+agregan los puntos porque hay regiones con muy pocos países.
+
+```{r, fig.height=3.0}
+# Traducción SOLO para las etiquetas del eje: no se modifica la columna `region`.
+regiones_es <- c("Africa" = "África", "Asia" = "Asia", "Europe" = "Europa",
+                 "North America" = "Norteamérica", "Oceania" = "Oceanía",
+                 "South America" = "Sudamérica")
+
+ggplot(mpi, aes(x = fct_reorder(region, mpi, .fun = median), y = mpi)) +
+  geom_boxplot(fill = "#cde2fb", color = gris, outlier.shape = NA) +
+  geom_point(position = position_jitter(width = 0.15, height = 0, seed = 1),
+             color = azul, alpha = 0.6, size = 1.6) +
+  geom_text(data = conteo_region,
+            aes(x = region, y = 0.56, label = paste0("n = ", n)),
+            color = gris, size = 3, hjust = 1) +
+  scale_x_discrete(labels = regiones_es) +
+  coord_flip() +
+  labs(
+    title    = "África concentra los MPI más altos",
+    subtitle = "Cada punto es un país; año de encuesta más reciente",
+    x = NULL,
+    y = "Índice de Pobreza Multidimensional (escala 0 a 1)",
+    caption = "Fuente: Alkire et al. (2025), procesado por Our World in Data"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"),
+        panel.grid.major.y = element_blank())
+```
+
+```{r}
+mpi %>%
+  dplyr::group_by(region) %>%
+  dplyr::summarise(paises   = dplyr::n(),
+            mediana  = round(median(mpi), 4),
+            media    = round(mean(mpi), 4),
+            minimo   = round(min(mpi), 4),
+            maximo   = round(max(mpi), 4),
+            desv_est = round(sd(mpi), 4))
+```
+
+```{r}
+# África es la región más dispersa: se revisan sus dos extremos.
+africa <- mpi %>% dplyr::filter(region == "Africa")
+africa %>% dplyr::filter(mpi == min(mpi) | mpi == max(mpi))
+```
+
+**Qué muestra.** Nivel y dispersión del MPI dentro de cada región.
+
+**Hallazgos.**
+
+* África tiene la mediana más alta (0.226), unas 14 veces la de Asia. Es una
+  diferencia descriptiva, no una relación causal.
+* Es también la más dispersa: de Seychelles (0.003) a Chad (0.517). No es un
+  bloque homogéneo. Europa aporta solo 4 países.
+
+## Gráfica 3: evolución temporal de la pobreza nacional
+
+Líneas en paneles separados, para los países con **25 o más observaciones**
+(son 7). No se comparan niveles entre paneles: la fuente advierte que las líneas
+nacionales no son comparables entre países.
+
+```{r, fig.height=3.2}
+paises_largos <- obs_por_pais %>% dplyr::filter(n >= 25)
+paises_largos
+
+# Nombre en español SOLO para los títulos de los paneles: se agrega una columna
+# nueva y no se toca la columna original `pais`.
+nombres_es <- c("Belarus" = "Bielorrusia", "Costa Rica" = "Costa Rica",
+                "Ecuador" = "Ecuador", "Indonesia" = "Indonesia",
+                "Peru" = "Perú", "Russia" = "Rusia", "Thailand" = "Tailandia")
+
+pov_largos <- pov %>%
+  dplyr::filter(pais %in% paises_largos$pais) %>%
+  dplyr::mutate(pais_es = nombres_es[pais])
+
+ggplot(pov_largos, aes(x = anio, y = pobreza)) +
+  geom_line(color = azul, linewidth = 0.7) +
+  geom_point(color = azul, size = 0.9) +
+  facet_wrap(~ pais_es, ncol = 4) +
+  labs(
+    title    = "Todas las series largas bajaron",
+    subtitle = "Países con 25 o más observaciones; % bajo la línea nacional de cada país",
+    x = "Año",
+    y = "% de la población",
+    caption = "Cada panel usa la línea nacional de su propio país; los niveles no son comparables entre paneles.\nFuente: Banco Mundial PIP (2026), procesado por Our World in Data"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"),
+        panel.grid.minor = element_blank(),
+        strip.text = element_text(face = "bold"))
+```
+
+```{r}
+# Primer y último valor de cada serie: se indexa el vector por el año, sin
+# necesidad de ordenar.
+cambio_series <- pov_largos %>%
+  dplyr::group_by(pais_es) %>%
+  dplyr::summarise(obs = dplyr::n(),
+            primer_anio   = min(anio),
+            ultimo_anio   = max(anio),
+            valor_inicial = pobreza[anio == min(anio)],
+            valor_final   = pobreza[anio == max(anio)],
+            cambio_pp     = round(pobreza[anio == max(anio)] -
+                                  pobreza[anio == min(anio)], 1))
+cambio_series
+
+# ¿Alguna serie subió? Se cuenta, en vez de imprimir una tabla vacía.
+dim(cambio_series %>% dplyr::filter(cambio_pp > 0))[1]
+
+# Las dos caídas más grandes y la más pequeña, sin ordenar la tabla.
+cambio_series %>% dplyr::filter(cambio_pp == min(cambio_pp))
+cambio_series %>% dplyr::filter(cambio_pp == max(cambio_pp))
+```
+
+**Qué muestra.** Cómo cambió la tasa nacional en los 7 países con más datos.
+
+**Hallazgos.**
+
+* Los siete bajan: el conteo de series con `cambio_pp > 0` da 0.
+* Las caídas van de -59.8 pp (Tailandia) a -8.5 pp (Indonesia), pero no son
+  monótonas: Perú y Costa Rica llevan más de una década casi planos.
+
+## Gráfica 4: relación entre MPI y pobreza monetaria nacional
+
+> Esta sección no forma parte del entregable de dos cuartillas. Se conserva
+> porque el cruce entre los dos datasets se usará en la siguiente etapa.
+
+Es la única relación entre dos variables numéricas que permiten los datos, y
+requiere cruzar los dos datasets. Como el MPI tiene un solo año por país, para
+cada país se toma su observación **más reciente** de pobreza nacional.
+
+```{r}
+# Una fila por país con su último año disponible y el valor de ese año.
+ultimo_pov <- pov %>%
+  dplyr::group_by(codigo) %>%
+  dplyr::summarise(anio_pov = max(anio),
+            pobreza  = pobreza[anio == max(anio)])
+
+comparacion <- dplyr::inner_join(mpi, ultimo_pov, by = "codigo")
+
+# Diferencia de años entre las dos mediciones que se están comparando.
+comparacion$dif_anios <- comparacion$anio_pov - comparacion$anio
+
+# Grupo África / resto del mundo a partir de una condición lógica.
+comparacion$grupo <- factor(comparacion$region == "Africa",
+                            labels = c("Resto del mundo", "África"))
+
+paste0("Países en común: ", dim(comparacion)[1])
+summary(comparacion$dif_anios)
+```
+
+```{r, fig.height=4.4}
+ggplot(comparacion, aes(x = mpi, y = pobreza, color = grupo)) +
+  geom_smooth(method = "lm", se = FALSE, color = gris, linewidth = 0.6) +
+  geom_point(size = 2, alpha = 0.85) +
+  labs(
+    title    = "Más pobreza multidimensional se asocia con más pobreza monetaria",
+    subtitle = paste0("Un punto por país (n = ", dim(comparacion)[1],
+                      "); correlación de Pearson = ",
+                      round(cor(comparacion$mpi, comparacion$pobreza), 2)),
+    x = "Índice de Pobreza Multidimensional (escala 0 a 1)",
+    y = "% bajo la línea de pobreza nacional",
+    color = NULL,
+    caption = "La recta es un ajuste lineal descriptivo, no un modelo causal.\nCada país usa su propia línea nacional, así que el eje Y no es comparable entre países."
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold"),
+        legend.position = "top",
+        panel.grid.minor = element_blank())
+```
+
+```{r}
+paste0("Pearson: ", round(cor(comparacion$mpi, comparacion$pobreza), 3),
+       " | Spearman: ",
+       round(cor(comparacion$mpi, comparacion$pobreza, method = "spearman"), 3))
+
+# ¿El desfase de años explica la asociación? Se repite solo con los cruces
+# cuyas dos mediciones están a 2 años o menos de distancia.
+cercanos <- comparacion %>% dplyr::filter(dif_anios <= 2, dif_anios >= -2)
+paste0("Pearson con desfase de 2 años o menos (n = ", dim(cercanos)[1], "): ",
+       round(cor(cercanos$mpi, cercanos$pobreza), 3))
+
+comparacion %>%
+  dplyr::group_by(grupo) %>%
+  dplyr::summarise(paises          = dplyr::n(),
+            mpi_mediana     = round(median(mpi), 3),
+            pobreza_mediana = round(median(pobreza), 1),
+            correlacion     = round(cor(mpi, pobreza), 3))
+
+# Casos que más se alejan de la recta: poco MPI pero mucha pobreza monetaria.
+comparacion %>% dplyr::filter(mpi < 0.1, pobreza > 45)
+```
+
+**Qué muestra.** Si los países con más privaciones en salud, educación y
+condiciones de vida son también los que tienen más población bajo su línea de
+pobreza monetaria.
+
+**Hallazgos.**
+
+* Hay una **asociación positiva moderada**: Pearson
+  `r round(cor(comparacion$mpi, comparacion$pobreza), 2)` y Spearman
+  `r round(cor(comparacion$mpi, comparacion$pobreza, method = "spearman"), 2)`.
+  Los dos indicadores apuntan en la misma dirección pero **no miden lo mismo**;
+  si lo hicieran, la correlación sería mucho más alta. Es una asociación
+  descriptiva, no una relación causal, y además ambos indicadores comparten
+  causas de fondo.
+* La dispersión crece con el MPI: en valores bajos de MPI las tasas nacionales se
+  abren desde 0 % hasta más de 50 %. Honduras (MPI 0.051 y 60.1 %), Eswatini
+  (0.033 y 58.9 %), Santo Tomé y Príncipe (0.048 y 55.5 %) y Belice (0.017 y
+  52.0 %) tienen poca privación multidimensional pero mucha pobreza medida por
+  ingreso. Una explicación
+  plausible, que **estos datos no permiten confirmar**, es que las líneas
+  nacionales de países de ingreso medio son más exigentes; la fuente advierte
+  justamente que no son comparables entre países.
+* Al restringir a los países cuyas dos mediciones están a 2 años o menos de
+  distancia la correlación se mantiene en el mismo orden, así que el desfase
+  temporal no explica la asociación.
+
+# 3. Entregable escrito
+
+## 3.1 Descripción del dataset
+
+Dos datasets de Our World in Data. **MPI**: 109 x 5, una fila por país con el
+Índice de Pobreza Multidimensional (0-1) de su año de encuesta más reciente, más
+código ISO, año y región OWID. **Líneas nacionales**: 1,172 x 4, panel país-año
+con el porcentaje bajo la línea de pobreza de cada país, 160 países entre 1985 y
+2025. Ambos tienen dos identificadores, un año entero y una numérica continua;
+solo MPI trae una categórica (`region`, 6 niveles). Ninguno trae fecha completa:
+la granularidad mínima es el año.
+
+## 3.2 Calidad y características de los datos
+
+Integridad alta: **ningún nulo, ninguna cadena vacía y ninguna fila duplicada**,
+con llaves únicas (`codigo` en MPI, `codigo + anio` en el panel). El MPI tiene
+mediana 0.039 contra media 0.118, diferencia que anticipa el sesgo a la derecha;
+la tasa nacional, mediana 20.6 % y rango de 0 % a 82.3 %.
+
+Los problemas son de **comparabilidad, no de integridad**: los años del MPI van
+de 2013 a 2023, así que comparar países es comparar años distintos; la fuente
+advierte que las líneas nacionales no son comparables entre países; y 39 de 160
+países tienen una sola observación. La regla 1.5 x IQR no marca atípicos en el
+MPI, y los 57 valores altos del porcentaje son países reales. **No se eliminó ni
+modificó ninguna observación**: el único cambio fue renombrar columnas.
+
+## 3.3 Análisis exploratorio
+
+Las tres gráficas y sus hallazgos están en la sección 2. En síntesis: el MPI se
+concentra en valores bajos con una cola larga hasta 0.517; África tiene la
+mediana más alta pero también la mayor dispersión interna; y los siete países
+con series largas redujeron todos su tasa nacional, aunque con estancamientos
+intermedios.
+
+## 3.4 Observaciones iniciales
+
+La limitación principal no es de calidad sino de **diseño**: el MPI es una foto
+de años distintos por país y las tasas nacionales no son comparables entre sí.
+El patrón más marcado es la concentración regional; lo más inesperado, la
+heterogeneidad dentro de África, que cubre casi todo el rango del índice ella
+sola. Todo es descriptivo: ninguna gráfica permite afirmar causalidad y no se
+calculó ninguna medida de asociación.
+
+# 4. Posibles líneas de análisis posteriores
+
+Todas surgen de lo observado en este EDA:
+
+1. **Cruzar los dos datasets.** Unirlos por código de país permitiría ver si los
+   países con más privación multidimensional son también los que tienen más
+   población bajo su línea de pobreza monetaria. Hay que resolver antes que cada
+   dataset usa años distintos para el mismo país.
+2. **Descomponer el MPI.** La fuente documenta que el MPI es el producto de
+   incidencia x intensidad y que se descompone en 10 indicadores. Traer esas
+   series permitiría ver si dos países con el mismo MPI son pobres por las
+   mismas razones.
+3. **Usar la versión *harmonized over time* del MPI**, que la documentación
+   menciona como dataset separado, para resolver el problema de que aquí cada
+   país tiene un año distinto y poder analizar tendencias.
+4. **Analizar velocidad de reducción**, no solo nivel: con los países que tienen
+   muchas observaciones se puede estimar la caída en puntos porcentuales por año
+   y ver quién reduce pobreza más rápido dentro de su propia definición nacional.
+   Los 39 países con una sola observación quedan fuera de este análisis.
+5. **Explorar la dispersión dentro de África**, que es la región más heterogénea
+   del dataset, en lugar de tratarla como un solo grupo.
+6. **Cruzar con una variable de contexto** (por ejemplo PIB per cápita o
+   población de OWID) para ponderar por población y ver cuánta gente, y no
+   cuántos países, está detrás de cada valor.
+
+#Fuentes:
+
+Alkire et al. (2025) - The Global Multidimensional Poverty Index (MPI) 2025 - with minor processing by Our World in Data. “Multidimensional Poverty Index (MPI) - Most recent year” [dataset]. Alkire et al., “Global Multidimensional Poverty Index (MPI) 2025” [original data]. Retrieved September 20, 2026 from <https://archive.ourworldindata.org/20260909-232403/grapher/multidimensional-poverty-index-mpi.html> (archived on September 9, 2026).
+World Bank Poverty and Inequality Platform (2026) – with major processing by Our World in Data. “Share of population living in extreme poverty – World Bank” [dataset]. World Bank Poverty and Inequality Platform, “World Bank Poverty and Inequality Platform (PIP) 20260324_2021, 20260324_2017” [original data]. Retrieved September 20, 2026 from https://archive.ourworldindata.org/20260910-004756/grapher/share-of-population-in-extreme-poverty.html (archived on September 10, 2026).
