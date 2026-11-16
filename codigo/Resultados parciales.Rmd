@@ -1,0 +1,145 @@
+---
+title: "Resultados parciales"
+author:
+  - Alcántara Zepeda Job
+  - Velazquez Velazquez Sofia
+  - Gorostieta Jurado Ricardo André
+  - Góngora Sánchez Castellanos Cristopher
+date: "2026-10-31"
+output:
+  pdf_document:
+    latex_engine: xelatex
+header-includes:
+  - \renewcommand{\and}{\\}
+---
+
+
+
+```{r}
+library(ggplot2)
+library(sf)
+library(rnaturalearth)
+library(treemapify)
+library(dplyr)
+```
+
+```{r}
+p_df   <- read.csv("https://ourworldindata.org/grapher/share-of-population-living-in-poverty-by-national-poverty-lines.csv?v=1&csvType=full&useColumnShortNames=false")
+mdp_df <- read.csv("https://ourworldindata.org/grapher/multidimensional-poverty-index-mpi.csv?v=1&csvType=full&useColumnShortNames=false")
+f      <- read.csv("https://ourworldindata.org/grapher/share-of-population-in-extreme-poverty.csv?v=1&csvType=full&useColumnShortNames=false")
+mundo  <- ne_countries(scale = "medium", returnclass = "sf") 
+```
+
+```{r}
+colnames(mundo)
+```
+
+```{r}
+unique(mundo$gdp_year)
+```
+
+Vamos a hacer un treemap agrupando por region y país viendo el tamaño de acuerdo al porcentaje de población en pobreza y color que representa la población
+
+```{r}
+colnames(f)
+```
+
+
+Escogemos un año para hacer un treemap
+```{r}
+pobreza_ex <- filter(f, Year == 2018, !is.na(World.region.according.to.OWID), World.region.according.to.OWID != "" )
+pobreza_ex <- pobreza_ex %>% rename(region = World.region.according.to.OWID)
+
+```
+
+Juntemos la gráfica del mundo con esta misma gráfica y veamos si hay una clara tendencia de que a mayor PIB baja el grado de pobreza extrema
+
+```{r}
+mundo <- ne_countries(scale = "medium", returnclass = "sf") %>%
+  filter(adm0_a3 != "ATA")   # quitar Antártida
+
+mundo_pobreza <- mundo %>%
+  left_join(pobreza_ex, by = c("adm0_a3" = "Code")) %>%
+  rename(pobreza = Share.of.population.in.poverty...3.a.day.)
+```
+
+
+```{r}
+ggplot(pobreza_ex, aes(area = Share.of.population.in.poverty...3.a.day., 
+                       fill = Population, 
+                       label = Entity, 
+                       subgroup = region)) +
+  geom_treemap() +
+  geom_treemap_subgroup_border() +
+  geom_treemap_subgroup_text(place = "center", grow = T, alpha = 0.5,
+                             color = "black", fontface = "italic", min.size = 0) +
+  geom_treemap_text(color = "white", place = "topleft", reflow = T) +
+  scale_fill_viridis_c(trans = "log10", name = "Población (log10)")
+```
+
+
+
+```{r}
+colnames(mundo_pobreza)
+mundo_pobreza <- mundo_pobreza %>% filter(gdp_md > 0, pobreza > 0)
+```
+```{r}
+ggplot(mundo_pobreza, aes(area = gdp_md, 
+                       fill = pobreza, 
+                       label = Entity, 
+                       subgroup = region)) +
+  geom_treemap() +
+  geom_treemap_subgroup_border() +
+  geom_treemap_subgroup_text(place = "center", grow = T, alpha = 0.5,
+                             color = "black", fontface = "italic", min.size = 0) +
+  geom_treemap_text(color = "white", place = "topleft", reflow = T) +
+  scale_fill_viridis_c( name = "Porcentaje pobreza")
+```
+Se ve una muy clara relación entre el porcentaje de personas en pobreza extrema de un país y su producto interno bruto. Aunque hay caso sinteresantes como Indonesia o Filipinas con PIB mayor a algunos paises europeos pero mayor porcentajem de población de pobreza extrema
+
+
+Veamos si se ve parecida la gráfica de pobreza multifactorial
+
+```{r}
+colnames(mdp_df)
+```
+
+
+```{r}
+mundo_pobreza_mf <- mundo %>%
+  left_join(mdp_df, by = c("adm0_a3" = "Code")) %>%
+  rename(pobreza = Multidimensional.Poverty.Index..MPI.)
+
+mundo_pobreza_mf <- mundo_pobreza_mf %>% filter(pobreza >0)
+```
+
+```{r}
+ggplot(mundo_pobreza_mf, aes(area = gdp_md, 
+                             fill = pobreza, 
+                             label = paste0(Entity, " (", Year, ")"), 
+                             subgroup = World.region.according.to.OWID)) +
+  geom_treemap() +
+  geom_treemap_subgroup_border() +
+  geom_treemap_subgroup_text(place = "center", grow = T, alpha = 0.5,
+                             color = "black", fontface = "italic", min.size = 0) +
+  geom_treemap_text(color = "white", place = "topleft", reflow = T) +
+  scale_fill_viridis_c(name = "Porcentaje pobreza")
+```
+
+
+Debido al dataset para comparar la pobreza multifactorial de los países tuvimos que usar años diferentes, pero nos puede dar cierta idea que pobreza multifactorial se parece mucho a pobreza extrema
+
+#Análisis de resultados
+
+En lo que llevamos del análsis podemos decir que hemos llegado a conclusiones interesantes: 
+
+1) África tenía más de la mitad de la gente que vive en pobreza extrema del mundo en 2018
+
+2) Hay una clara tendencia en que países con mayor PIB tienen menor porcentaje de pobreza
+
+3) Pese a la limitación de los datos de pobreza multifacotrial podemos darnos una idea de que la pobreza multifactorial se relaciona mucho con el porcentaje de pobreza extrema
+
+4) Parece ser que no hay una relación directa entre población y pobreza
+
+
+Podemos igual llegar a conclusiones bien sabidas como que el norte global tiene los índices de pobreza más bajos, aunque sorprende encontrar países como Kosovo que pese a ser europeo tiene un índice de pobreza alto.

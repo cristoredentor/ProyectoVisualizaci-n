@@ -1,0 +1,148 @@
+---
+title: "Gráficas avanzadas"
+author:
+  - Alcántara Zepeda Job
+  - Velazquez Velazquez Sofia
+  - Gorostieta Jurado Ricardo André
+  - Góngora Sánchez Castellanos Cristopher
+date: "2026-10-31"
+output:
+  pdf_document:
+    latex_engine: xelatex
+header-includes:
+  - \renewcommand{\and}{\\}
+---
+
+#Librerias usadas
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(sf)
+library(rnaturalearth)
+library(scales)
+
+```
+
+#Introducción
+
+En esta entrega vamos a hacer dos gráficas georeferenciadas a partir de los datos que tenemos
+```{r}
+p_df   <- read.csv("https://ourworldindata.org/grapher/share-of-population-living-in-poverty-by-national-poverty-lines.csv?v=1&csvType=full&useColumnShortNames=false")
+mdp_df <- read.csv("https://ourworldindata.org/grapher/multidimensional-poverty-index-mpi.csv?v=1&csvType=full&useColumnShortNames=false")
+f      <- read.csv("https://ourworldindata.org/grapher/share-of-population-in-extreme-poverty.csv?v=1&csvType=full&useColumnShortNames=false")
+
+```
+
+Nuestra primera gráfica consiste un mapa coroplético del mundo con los porcentajes de pobreza, para eso utilizaremos el dataset de población en pobreza extrema buscando el año que menos valores nulos tenga. 
+
+La segunda gráfica es una representación de la población por país.
+
+
+
+#Preparación de datasets
+```{r}
+colnames(f)
+```
+
+Ya que muchos años del dataset de pobreza extrema por país tienen  valores nulos vamos a ver que año nos conviene usar para graficar.
+```{r}
+library(dplyr)
+
+años <- f %>%
+  group_by(Year) %>%
+  summarise(cuenta = sum(!is.na(Share.of.population.in.poverty...3.a.day.)))
+años$Year[which.max(años$cuenta)]
+```
+
+Al parecer 2018 es el año que tiene menor número de valores nulos en el porcentaje de pobreza
+
+```{r}
+año <- años$Year[which.max(años$cuenta)]
+pobreza_ex <- filter(f, Year == año)
+```
+
+Vamos a juntar el dataset del mundo del paquete rnaturalearth con el dataset del porcentaje de pobreza extrema por país
+```{r}
+mundo <- ne_countries(scale = "medium", returnclass = "sf") %>%
+  filter(adm0_a3 != "ATA")   # quitar Antártida
+
+mundo_pobreza <- mundo %>%
+  left_join(pobreza_ex, by = c("adm0_a3" = "Code")) %>%
+  rename(pobreza = Share.of.population.in.poverty...3.a.day.)
+```
+
+```{r}
+
+ggplot(mundo_pobreza) +
+  geom_sf(aes(fill = pobreza), color = "white", linewidth = 0.1) +
+  scale_fill_viridis_c(
+    option = "magma", direction = -1,
+    na.value = "grey88",
+    name = "% de la población",
+    labels = scales::label_percent(scale = 1)
+  ) +
+  coord_sf(crs = "+proj=robin") +
+  labs(
+    title = "Población en pobreza extrema en 2018",
+    caption = "Pobreza extrena es el porcentaje que vive con menos de $3 al día. Los países grises no tiene datos.\nFuente: Elaboración propia con datos de Our World in Data"
+  ) +
+  theme_void(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "grey30"),
+    plot.caption = element_text(color = "grey50"),
+    legend.position = "bottom",
+    legend.key.width = unit(2, "cm"),
+    legend.key.height = unit(0.3, "cm"),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+```
+#Segunda gráfica
+
+Ahora hacemos el mismo proceso con la variable de año. 
+
+Comenzamos buscando cuál es el año que tiene más datos de población
+
+```{r}
+pponlación <- f %>%
+  group_by(Year) %>%
+  summarise(cuenta = sum(!is.na(Population)))
+años$Year[which.max(años$cuenta)]
+```
+
+Como el año es 2018 podemos usar el mismo dataset
+
+```{r}
+
+ggplot(mundo_pobreza) +
+  geom_sf(aes(fill = Population), color = "white", linewidth = 0.1) +
+  scale_fill_viridis_c(
+    option = "viridis", direction = -1,
+    trans = "log10",
+    na.value = "grey88",
+    name = "Población",
+    breaks = c(1e5, 1e6, 1e7, 1e8, 1e9),
+    labels = label_number(scale_cut = cut_short_scale())
+  ) +
+  coord_sf(crs = "+proj=robin") +
+  labs(
+    title = "Población mundial en 2018",
+    caption = "Escala logarítmica. Países en gris no tienen datos.\nFuente: Elaboración propia con datos de Our World in Data"
+  ) +
+  theme_void(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "grey30"),
+    plot.caption = element_text(color = "grey50"),
+    legend.position = "bottom",
+    legend.key.width = unit(2.5, "cm"),
+    legend.key.height = unit(0.3, "cm"),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+```
+
+```{r}
+colnames(mdp_df)
+```
+
