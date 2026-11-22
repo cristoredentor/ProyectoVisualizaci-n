@@ -1,0 +1,230 @@
+---
+title: "Pobreza en el mundo - Proyecto final"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: scroll
+runtime: shiny
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+# ---- Librerías ----
+library(flexdashboard)
+library(shiny)
+library(dplyr)
+library(tidyr)
+library(sf)
+library(rnaturalearth)
+library(leaflet)
+library(ggplot2)
+library(DT)
+```
+
+```{r}
+f      <- read.csv("https://ourworldindata.org/grapher/share-of-population-in-extreme-poverty.csv?v=1&csvType=full&useColumnShortNames=false")
+mdp_df <- read.csv("https://ourworldindata.org/grapher/multidimensional-poverty-index-mpi.csv?v=1&csvType=full&useColumnShortNames=false")
+mundo  <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
+
+```
+
+```{r}
+mon <- f |>
+  dplyr::transmute(adm0_a3 = Code, anio_mon = Year,
+                   pobreza_mon = Share.of.population.in.poverty...3.a.day.) |>
+  dplyr::filter(!is.na(pobreza_mon)) |>
+  dplyr::group_by(adm0_a3) |>
+  dplyr::slice_max(anio_mon, n = 1, with_ties = FALSE) |>
+  dplyr::ungroup()
+
+mpi <- mdp_df |>
+  dplyr::transmute(adm0_a3 = Code, anio_mpi = Year,
+                   pobreza_mpi = Multidimensional.Poverty.Index..MPI.) |>
+  dplyr::filter(!is.na(pobreza_mpi)) |>
+  dplyr::group_by(adm0_a3) |>
+  dplyr::slice_max(anio_mpi, n = 1, with_ties = FALSE) |>
+  dplyr::ungroup()
+
+```
+
+
+```{r}
+datos <- mundo |>
+  dplyr::select(adm0_a3, name_en, geometry, pop_est, gdp_md, region_un) |>
+  dplyr::left_join(mon, by = "adm0_a3") |>
+  dplyr::left_join(mpi, by = "adm0_a3")
+
+datos$pobreza_mpi <- datos$pobreza_mpi * 100
+
+base <- datos |>
+  sf::st_drop_geometry() |>
+  dplyr::filter(!is.na(pobreza_mon), !is.na(pobreza_mpi))
+```
+
+```{r}
+# ---- Etiquetas y paletas del mapa ----
+fmt <- function(x, anio) ifelse(is.na(x), "sin dato",
+                                paste0(round(x, 1), "% (", anio, ")"))
+
+etiquetas <- sprintf(
+  "<strong>%s</strong><br/>Pobreza monetaria: %s<br/>Pobreza multidimensional: %s",
+  datos$name_en,
+  fmt(datos$pobreza_mon, datos$anio_mon),
+  fmt(datos$pobreza_mpi, datos$anio_mpi)
+) |> lapply(htmltools::HTML)
+
+pal_mon <- leaflet::colorBin(
+  palette = RColorBrewer::brewer.pal(9, "YlOrRd")[4:9],
+  domain  = datos$pobreza_mon,
+  bins    = c(0, 2, 5, 10, 20, 40, 100),
+  na.color = "#cccccc"
+)
+pal_mpi <- leaflet::colorBin(
+  palette = RColorBrewer::brewer.pal(9, "PuRd")[4:9],
+  domain  = datos$pobreza_mpi,
+  bins    = c(0, 5, 10, 20, 40, 60, 100),
+  na.color = "#cccccc"
+)
+resaltado <- leaflet::highlightOptions(weight = 2, color = "#333333", bringToFront = TRUE)
+```
+
+```{r}
+output$mapa <- leaflet::renderLeaflet({
+  leaflet::leaflet(datos) |>
+    leaflet::addTiles() |>
+    leaflet::addPolygons(group = "paises",
+                         layerId = ~paste0("mon_", name_en),
+                         fillColor = ~pal_mon(pobreza_mon), fillOpacity = 0.85,
+                         weight = 0.6, color = "#666666",
+                         label = etiquetas, highlightOptions = resaltado) |>
+    leaflet::addLegend(pal = pal_mon, values = ~pobreza_mon,
+                       title = "Pobreza monetaria (%)", na.label = "Sin dato",
+                       position = "topright")
+})
+
+# Actualiza el mapa y su única leyenda según la medida seleccionada.
+shiny::observeEvent(input$tipo_pobreza, {
+  mapa <- leaflet::leafletProxy("mapa") |>
+    leaflet::clearGroup("paises") |>
+    leaflet::clearControls()
+
+  if (input$tipo_pobreza == "mon") {
+    mapa |>
+      leaflet::addPolygons(data = datos, group = "paises",
+                           layerId = ~paste0("mon_", name_en),
+                           fillColor = ~pal_mon(pobreza_mon), fillOpacity = 0.85,
+                           weight = 0.6, color = "#666666",
+                           label = etiquetas, highlightOptions = resaltado) |>
+      leaflet::addLegend(pal = pal_mon, values = ~pobreza_mon, data = datos,
+                         title = "Pobreza monetaria (%)", na.label = "Sin dato",
+                         position = "topright")
+  } else {
+    mapa |>
+      leaflet::addPolygons(data = datos, group = "paises",
+                           layerId = ~paste0("mpi_", name_en),
+                           fillColor = ~pal_mpi(pobreza_mpi), fillOpacity = 0.85,
+                           weight = 0.6, color = "#666666",
+                           label = etiquetas, highlightOptions = resaltado) |>
+      leaflet::addLegend(pal = pal_mpi, values = ~pobreza_mpi, data = datos,
+                         title = "Pobreza multidimensional (%)", na.label = "Sin dato",
+                         position = "topright")
+  }
+
+}, ignoreInit = TRUE)
+```
+
+
+```{r}
+pais_sel <- shiny::reactiveVal(NULL)
+
+shiny::observeEvent(input$mapa_shape_click, {
+  pais_sel(sub("^(mon|mpi)_", "", input$mapa_shape_click$id))
+})
+
+# Clic en un punto de la gráfica
+shiny::observeEvent(input$clic_grafica, {
+  punto <- shiny::nearPoints(base, input$clic_grafica,
+                             xvar = "pobreza_mon", yvar = "pobreza_mpi",
+                             threshold = 10, maxpoints = 1)
+  if (nrow(punto) == 1) pais_sel(punto$name_en)
+})
+
+output$grafica <- shiny::renderPlot({
+
+  sel <- if (is.null(pais_sel())) base[0, ] else dplyr::filter(base, name_en == pais_sel())
+
+  subtitulo <- dplyr::case_when(
+    is.null(pais_sel()) ~ "Haz clic en un punto o en un país del mapa",
+    nrow(sel) == 0      ~ paste0(pais_sel(), ": no tiene datos de las dos medidas"),
+    TRUE                ~ paste0(pais_sel(), ": ", round(sel$pobreza_mon, 1),
+                                 "% monetaria, ", round(sel$pobreza_mpi, 1),
+                                 "% en el índice multidimensional")
+  )
+
+  ggplot2::ggplot(base, ggplot2::aes(x = pobreza_mon, y = pobreza_mpi)) +
+    ggplot2::geom_point(colour = "grey60", alpha = 0.7, size = 2,) +
+    geom_smooth(method="lm", se=TRUE) +
+    ggplot2::geom_point(data = sel, colour = "#d62728", size = 5) +
+    ggplot2::geom_text(data = sel, ggplot2::aes(label = name_en),
+                       colour = "#d62728", fontface = "bold", vjust = -1.2) +
+    ggplot2::labs(title = "Pobreza extrema vs pobreza multidimensional",
+                  subtitle = subtitulo,
+                  x = "Población en pobreza extrema (%)",
+                  y = "Índice de pobreza multidimensional (%)",
+                  caption = "Fuente: Our World in Data. Último año disponible por país.") +
+    ggplot2::theme_minimal(base_size = 13)
+}, height = 450)
+```
+
+
+Mapa y relación
+=====================================
+
+Column
+-------------------------------------
+
+### Pobreza extrema vs pobreza multidimensional
+
+```{r}
+shiny::plotOutput("grafica", click = "clic_grafica", height = 450)
+```
+
+### Países coloreados por último nivel de pobreza extrema/multidimensional registrado
+
+```{r}
+htmltools::tagList(
+  shiny::radioButtons(
+    "tipo_pobreza", label = NULL,
+    choices = c("Pobreza monetaria" = "mon",
+                "Pobreza multidimensional" = "mpi"),
+    selected = "mon", inline = TRUE
+  ),
+  leaflet::leafletOutput("mapa", height = 560),
+  htmltools::tags$p(
+    "Fuente: Our World in Data. Último año disponible por país.",
+    style = "margin: 8px 0 0 0; font-style: italic;"
+  )
+)
+```
+
+Datos
+=====================================
+
+### Tabla interactiva: últimos registros de ambos tipos de pobreza por país
+
+```{r}
+datos |>
+  sf::st_drop_geometry() |>
+  dplyr::select(name_en, region_un, pobreza_mon, anio_mon, pobreza_mpi, anio_mpi) |>
+  dplyr::mutate(dplyr::across(c(pobreza_mon, pobreza_mpi), ~ round(.x, 1))) |>
+  DT::datatable(
+    filter = "top",
+    rownames = FALSE,
+    colnames = c("País", "Región", "Pobreza monetaria (%)", "Último año registrado",
+                 "Pobreza multidimensional (%)", "Último año registrado"),
+    options = list(pageLength = 15, scrollX = TRUE)
+  )
+```
+
+
