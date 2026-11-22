@@ -1,6 +1,6 @@
 ---
 title: "Proyecto final"
-author: "cris"
+author: "cris, andré, job, sofi"
 date: "2026-11-22"
 output: html_document
 ---
@@ -75,7 +75,9 @@ mpi <- mpi_raw |>
 ```{r}
 ext_pob <- ext_raw |>
   transmute(
-    pais = Entity, Code, anio = Year,
+    pais = Entity,
+    Code = ifelse(Code == "OWID_KOS", "KOS", Code),  # Kosovo: código del mapa
+    anio = Year,
     poblacion = Population,
     region = `World region according to OWID`
   ) |>
@@ -90,18 +92,16 @@ ext_pob <- ext_raw |>
 ```
 
 ```{r}
-# 1. Cobertura por año
-cobertura <- ext_pob %>%
-  filter(Code %in% mundo$adm0_a3, !is.na(poblacion)) %>%
-  group_by(anio) %>%
-  summarise(n_paises = n_distinct(Code), .groups = "drop")
-
-
-umbral <- 0.85 * max(cobertura$n_paises)
-anios_ok <- cobertura %>% filter(n_paises >= umbral) %>% pull(anio)
-
-# 2.año por década
-anios <- anios_ok[anios_ok %% 10 == 0]
+# Años que se pueden ver en el mapa de población: los mismos años de la información
+# de pobreza (serie mundial observada, con población; después solo hay proyecciones).
+# Antes se usaban décadas desde 1600, estimaciones históricas sin relación con la pobreza.
+anios <- ext_raw |>
+  filter(Entity == "World",
+         !is.na(`Share of population in poverty ($3 a day)`),
+         !is.na(Population)) |>
+  pull(Year) |>
+  unique() |>
+  sort()
 ```
 
 # Cuadro de mando: datos y gráficas del análisis exploratorio
@@ -117,11 +117,18 @@ regiones_es <- c("Africa" = "África", "Asia" = "Asia", "Europe" = "Europa",
                  "North America" = "Norteamérica", "Oceania" = "Oceanía",
                  "South America" = "Sudamérica")
 
+# Último año con dato OBSERVADO. Desde el año siguiente OWID ya no trae población:
+# son proyecciones del Banco Mundial y no se usan en ninguna parte del tablero.
+anio_ultimo_obs <- ext_raw |>
+  filter(!is.na(`Share of population in poverty ($3 a day)`), !is.na(Population)) |>
+  pull(Year) |> max()
+
 paises_eda <- ext_raw |>
   transmute(pais = Entity, codigo = Code, anio = Year,
             pobreza = `Share of population in poverty ($3 a day)`,
             region  = `World region according to OWID`) |>
-  filter(!is.na(pobreza), codigo != "", codigo != "OWID_WRL", region != "")
+  filter(!is.na(pobreza), codigo != "", codigo != "OWID_WRL", region != "",
+         anio <= anio_ultimo_obs)
 
 # Dato más reciente de cada país
 ultimo <- paises_eda |>
@@ -131,7 +138,8 @@ ultimo <- paises_eda |>
 
 # Serie mundial (entidad agregada "World")
 serie_mundial <- ext_raw |>
-  filter(Entity == "World", !is.na(`Share of population in poverty ($3 a day)`)) |>
+  filter(Entity == "World", !is.na(`Share of population in poverty ($3 a day)`),
+         Year <= anio_ultimo_obs) |>
   transmute(anio = Year, pobreza = `Share of population in poverty ($3 a day)`)
 
 # Cruce MPI / pobreza extrema
@@ -153,6 +161,27 @@ etiquetas_region <- setNames(
 
 fuente_pip <- "Fuente: Elaboración propia con datos de Banco Mundial PIP, procesado por Our World in Data"
 
+# Títulos de las cajas: se calculan con los mismos datos que dibujan las gráficas
+pct_baja <- round(100 * mean(ultimo$pobreza < 10))
+tit_hist <- paste0(pct_baja, "% de los países tiene menos de 10% de su población en pobreza extrema")
+
+reg_max <- ultimo |>
+  group_by(region) |>
+  summarise(mediana = median(pobreza), .groups = "drop") |>
+  slice_max(mediana, n = 1, with_ties = FALSE)
+med_resto <- median(ultimo$pobreza[ultimo$region != reg_max$region])
+tit_box <- sprintf("%s tiene la mayor pobreza extrema: mediana de %.0f%% frente a %.0f%% en el resto de las regiones",
+                   regiones_es[[reg_max$region]], reg_max$mediana, med_resto)
+
+ini_m <- serie_mundial[which.min(serie_mundial$anio), ]
+fin_m <- serie_mundial[which.max(serie_mundial$anio), ]
+tit_mundial <- sprintf("La pobreza extrema mundial bajó de %.1f%% en %d a %.1f%% en %d",
+                       ini_m$pobreza, ini_m$anio, fin_m$pobreza, fin_m$anio)
+
+r_mpi <- cor(comparacion$mpi, comparacion$pobreza, use = "complete.obs")
+tit_mpi <- sprintf("Pobreza extrema y pobreza multidimensional: correlación de %.2f en %d países",
+                   r_mpi, nrow(comparacion))
+
 # Tema común: letra grande y sin título dentro de la gráfica
 # (el título va en el encabezado de cada caja, así nunca se corta ni se encima).
 tema_cm <- theme_minimal(base_size = 14) +
@@ -163,7 +192,7 @@ tema_cm <- theme_minimal(base_size = 14) +
 g_histograma <- function() {
   ggplot(ultimo, aes(x = pobreza)) +
     geom_histogram(binwidth = 5, fill = azul, color = "white") +
-    labs(subtitle = paste0(nrow(ultimo), " países; dato más reciente de cada uno"),
+    labs(subtitle = paste0(nrow(ultimo), " países; dato observado más reciente de cada uno (hasta ", anio_ultimo_obs, ")"),
          x = "% de la población bajo 3 USD/día", y = "Número de países") +
     tema_cm
 }
@@ -184,7 +213,7 @@ g_mundial <- function() {
   ggplot(serie_mundial, aes(x = anio, y = pobreza)) +
     geom_line(color = azul, linewidth = 0.9) +
     geom_point(color = azul, size = 1.6) +
-    labs(subtitle = "Los valores posteriores a 2023 son proyecciones",
+    labs(subtitle = paste0("Solo datos observados, hasta ", anio_ultimo_obs),
          x = "Año", y = "% de pobreza extrema") +
     tema_cm
 }
@@ -204,110 +233,166 @@ g_mpi <- function() {
 
 # Pobreza en el mundo: mapa + correlación
 
-Misma lógica que integracion_shiny, pero con la paleta *magma* invertida de la
-primera gráfica de Gráficas Avanzadas (claro = poca pobreza, oscuro = mucha).
+Paleta *magma* invertida de la primera gráfica de Gráficas Avanzadas
+(claro = poca pobreza, oscuro = mucha). El mapa ahora se puede consultar **por año**:
+para el año elegido, cada país muestra su dato más reciente hasta ese año.
 
 ```{r}
-mon_ult <- ext_raw |>
-  transmute(adm0_a3 = Code, anio_mon = Year,
-            pobreza_mon = `Share of population in poverty ($3 a day)`) |>
-  filter(!is.na(pobreza_mon)) |>
-  group_by(adm0_a3) |>
-  slice_max(anio_mon, n = 1, with_ties = FALSE) |>
-  ungroup()
+# ---- Series completas por país, solo datos observados (nada de proyecciones) ----
+serie_mon <- ext_raw |>
+  transmute(adm0_a3 = ifelse(Code == "OWID_KOS", "KOS", Code), anio = Year,
+            valor = `Share of population in poverty ($3 a day)`) |>
+  filter(!is.na(valor), adm0_a3 != "", anio <= anio_ultimo_obs) |>
+  group_by(adm0_a3, anio) |>
+  summarise(valor = mean(valor), .groups = "drop")
 
-mpi_ult <- mpi_raw |>
-  transmute(adm0_a3 = Code, anio_mpi = Year,
-            pobreza_mpi = `Multidimensional Poverty Index (MPI)`) |>
-  filter(!is.na(pobreza_mpi)) |>
-  group_by(adm0_a3) |>
-  slice_max(anio_mpi, n = 1, with_ties = FALSE) |>
-  ungroup()
+serie_mpi <- mpi_raw |>
+  transmute(adm0_a3 = Code, anio = Year,
+            valor = `Multidimensional Poverty Index (MPI)` * 100) |>
+  filter(!is.na(valor), adm0_a3 != "") |>
+  group_by(adm0_a3, anio) |>
+  summarise(valor = mean(valor), .groups = "drop")
 
-datos_mapa <- mundo |>
-  select(adm0_a3, name_en, geometry, pop_est, gdp_md, region_un) |>
-  left_join(mon_ult, by = "adm0_a3") |>
-  left_join(mpi_ult, by = "adm0_a3")
+rango_mon <- range(serie_mon$anio)
+rango_mpi <- range(serie_mpi$anio)
 
-datos_mapa$pobreza_mpi <- datos_mapa$pobreza_mpi * 100
+# Geometría fija: solo cambian los valores, no hace falta volver a unir sf cada vez
+mundo_geo <- mundo |> select(adm0_a3, name_en, pop_est)
 
-base_corr <- datos_mapa |>
-  st_drop_geometry() |>
-  filter(!is.na(pobreza_mon), !is.na(pobreza_mpi))
+# Dato más reciente de cada país con año <= anio_sel, sin importar qué tan viejo sea.
+# Si el país no tiene ningún dato hasta ese año, queda sin dato (no se inventa nada).
+dato_al_anio <- function(serie, anio_sel) {
+  serie |>
+    filter(anio <= anio_sel) |>
+    group_by(adm0_a3) |>
+    slice_max(anio, n = 1, with_ties = FALSE) |>
+    ungroup()
+}
 
-# ---- Etiquetas y paletas del mapa ----
-fmt <- function(x, anio) ifelse(is.na(x), "sin dato",
-                                paste0(round(x, 1), "% (", anio, ")"))
+# Mapa (sf) con los valores vigentes en el año elegido
+datos_anio <- function(anio_sel) {
+  mon <- dato_al_anio(serie_mon, anio_sel)
+  mpi <- dato_al_anio(serie_mpi, anio_sel)
 
-etiquetas <- sprintf(
-  "<strong>%s</strong><br/>Pobreza monetaria: %s<br/>Pobreza multidimensional: %s",
-  datos_mapa$name_en,
-  fmt(datos_mapa$pobreza_mon, datos_mapa$anio_mon),
-  fmt(datos_mapa$pobreza_mpi, datos_mapa$anio_mpi)
-) |> lapply(htmltools::HTML)
+  d <- mundo_geo
+  d$anio_sel <- anio_sel
+  i <- match(d$adm0_a3, mon$adm0_a3)
+  d$pobreza_mon <- mon$valor[i]
+  d$anio_mon    <- mon$anio[i]
+  j <- match(d$adm0_a3, mpi$adm0_a3)
+  d$pobreza_mpi <- mpi$valor[j]
+  d$anio_mpi    <- mpi$anio[j]
+  d
+}
 
-# Paleta de la primera gráfica avanzada: viridis "magma", direction = -1
+# ---- Etiquetas (hover), fichas (clic) y paletas del mapa ----
+fmt <- function(x, anio, anio_sel) {
+  ifelse(is.na(x), paste0("sin dato hasta ", anio_sel),
+         paste0(round(x, 1), "% (", anio, ")"))
+}
+
+textos_mapa <- function(d) {
+  mon <- fmt(d$pobreza_mon, d$anio_mon, d$anio_sel)
+  mpi <- fmt(d$pobreza_mpi, d$anio_mpi, d$anio_sel)
+  pob <- ifelse(is.na(d$pop_est), "sin dato",
+                format(round(d$pop_est), big.mark = ",", scientific = FALSE))
+  list(
+    etiqueta = lapply(
+      sprintf("<strong>%s</strong><br/>Pobreza monetaria: %s<br/>Pobreza multidimensional: %s",
+              d$name_en, mon, mpi),
+      htmltools::HTML),
+    # ficha que se abre al hacer clic en el país
+    popup = sprintf(
+      paste0("<div style='min-width:210px'>",
+             "<h4 style='margin:0 0 6px 0'>%s</h4>",
+             "<b>Pobreza monetaria (3 USD/día):</b> %s<br/>",
+             "<b>Pobreza multidimensional:</b> %s<br/>",
+             "<b>Población (est.):</b> %s</div>"),
+      d$name_en, mon, mpi, pob)
+  )
+}
+
 paleta_magma <- viridisLite::magma(6, direction = -1)
 gris_na <- "#E0E0E0"   # = grey88, el gris de los países sin dato
 
-pal_mon <- colorBin(palette = paleta_magma, domain = datos_mapa$pobreza_mon,
+# dominio fijo 0-100 para que la leyenda no falle si un año no tiene datos
+pal_mon <- colorBin(palette = paleta_magma, domain = c(0, 100),
                     bins = c(0, 2, 5, 10, 20, 40, 100), na.color = gris_na)
-pal_mpi <- colorBin(palette = paleta_magma, domain = datos_mapa$pobreza_mpi,
+pal_mpi <- colorBin(palette = paleta_magma, domain = c(0, 100),
                     bins = c(0, 5, 10, 20, 40, 60, 100), na.color = gris_na)
 
 resaltado <- highlightOptions(weight = 2, color = "#333333", bringToFront = TRUE)
 
 # Dibuja los polígonos y la leyenda de la medida elegida ("mon" o "mpi")
-agregar_capa <- function(mapa, tipo) {
+agregar_capa <- function(mapa, d, tipo) {
+  tx <- textos_mapa(d)
   if (tipo == "mon") {
     mapa |>
-      addPolygons(data = datos_mapa, group = "paises",
+      addPolygons(data = d, group = "paises",
                   layerId = ~paste0("mon_", name_en),
                   fillColor = ~pal_mon(pobreza_mon), fillOpacity = 0.9,
                   weight = 0.5, color = "white",
-                  label = etiquetas, highlightOptions = resaltado) |>
-      addLegend(pal = pal_mon, values = ~pobreza_mon, data = datos_mapa,
+                  label = tx$etiqueta, popup = tx$popup,
+                  highlightOptions = resaltado) |>
+      addLegend(pal = pal_mon, values = c(0, 100),
                 title = "Pobreza monetaria (%)", na.label = "Sin dato",
                 position = "bottomleft")
   } else {
     mapa |>
-      addPolygons(data = datos_mapa, group = "paises",
+      addPolygons(data = d, group = "paises",
                   layerId = ~paste0("mpi_", name_en),
                   fillColor = ~pal_mpi(pobreza_mpi), fillOpacity = 0.9,
                   weight = 0.5, color = "white",
-                  label = etiquetas, highlightOptions = resaltado) |>
-      addLegend(pal = pal_mpi, values = ~pobreza_mpi, data = datos_mapa,
+                  label = tx$etiqueta, popup = tx$popup,
+                  highlightOptions = resaltado) |>
+      addLegend(pal = pal_mpi, values = c(0, 100),
                 title = "Pobreza multidimensional (%)", na.label = "Sin dato",
                 position = "bottomleft")
   }
 }
 
-grafica_correlacion <- function(pais) {
-  sel <- if (is.null(pais)) base_corr[0, ] else filter(base_corr, name_en == pais)
+# Ejes fijos para que la gráfica no "salte" al cambiar de año
+lim_x <- c(0, ceiling(max(serie_mon$valor)))
+lim_y <- c(0, ceiling(max(serie_mpi$valor)))
 
-  subtitulo <- dplyr::case_when(
-    is.null(pais)  ~ "Haz clic en un punto o en un país del mapa",
-    nrow(sel) == 0 ~ paste0(pais, ": no tiene datos de las dos medidas"),
-    TRUE           ~ paste0(pais, ": ", round(sel$pobreza_mon, 1),
-                            "% monetaria, ", round(sel$pobreza_mpi, 1),
-                            "% en el índice multidimensional")
-  )
+# base = países con las dos medidas en el año elegido
+grafica_correlacion <- function(pais, base, anio) {
+  sel <- if (is.null(pais)) base[0, ] else filter(base, name_en == pais)
 
-  ggplot(base_corr, aes(x = pobreza_mon, y = pobreza_mpi)) +
-    geom_smooth(method = "lm", formula = y ~ x, se = TRUE,
-                color = "#3B0F70", fill = "#DCC9E8", linewidth = 0.8) +
+  subtitulo <-
+    if (nrow(base) == 0) {
+      paste0("En ", anio, " ningún país tiene las dos medidas (el MPI empieza en ",
+             rango_mpi[1], ")")
+    } else if (is.null(pais)) {
+      "Haz clic en un punto o en un país del mapa"
+    } else if (nrow(sel) == 0) {
+      paste0(pais, ": no tiene datos de las dos medidas en ", anio)
+    } else {
+      paste0(pais, ": ", round(sel$pobreza_mon, 1), "% monetaria, ",
+             round(sel$pobreza_mpi, 1), "% en el índice multidimensional")
+    }
+
+  p <- ggplot(base, aes(x = pobreza_mon, y = pobreza_mpi))
+
+  if (nrow(base) >= 3) {
+    p <- p + geom_smooth(method = "lm", formula = y ~ x, se = TRUE,
+                         color = "#3B0F70", fill = "#DCC9E8", linewidth = 0.8)
+  }
+
+  p +
     geom_point(aes(color = pobreza_mon), alpha = 0.85, size = 2.4) +
     # mismos colores que el mapa; end = 0.85 evita que los puntos claros se pierdan en el fondo
     scale_color_viridis_c(option = "magma", direction = -1, end = 0.85,
-                          guide = "none") +
+                          limits = lim_x, guide = "none") +
     geom_point(data = sel, shape = 21, fill = "#FE9F6D", color = "#000004",
                size = 6, stroke = 1.6) +
     geom_label(data = sel, aes(label = name_en), color = "#000004",
                fontface = "bold", vjust = -0.9, linewidth = 0, alpha = 0.85) +
+    coord_cartesian(xlim = lim_x, ylim = lim_y) +
     labs(subtitle = subtitulo,
          x = "Población en pobreza extrema (%)",
          y = "Índice de pobreza multidimensional (%)",
-         caption = "Fuente: Our World in Data. Último año disponible por país.") +
+         caption = paste0("Fuente: Our World in Data. Último dato disponible de cada país hasta ", anio, ".")) +
     theme_minimal(base_size = 14) +
     theme(plot.subtitle = element_text(color = "grey30"),
           plot.caption = element_text(color = "grey50"),
@@ -324,9 +409,17 @@ pob_2018 <- ext_raw |>
             pobreza = `Share of population in poverty ($3 a day)`,
             region  = regiones_es[`World region according to OWID`])
 
+# Texto blanco sobre mosaicos oscuros y negro sobre mosaicos claros
+# (con la paleta clara = poco, oscura = mucho, el texto blanco fijo no se leía)
+color_texto <- function(x, trans = identity, umbral = 0.45) {
+  z <- trans(x)
+  ifelse((z - min(z)) / (max(z) - min(z)) > umbral, "white", "black")
+}
+
 # 1) Tamaño = % de pobreza extrema, color = población
 tm_poblacion <- pob_2018 |>
-  filter(!is.na(pobreza), pobreza > 0, !is.na(Population))
+  filter(!is.na(pobreza), pobreza > 0, !is.na(Population)) |>
+  mutate(txt = color_texto(Population, log10))
 
 # 2) Tamaño = PIB, color = % de pobreza extrema
 tm_extrema <- mundo |>
@@ -334,9 +427,10 @@ tm_extrema <- mundo |>
   filter(adm0_a3 != "ATA") |>
   select(adm0_a3, gdp_md) |>
   inner_join(pob_2018, by = c("adm0_a3" = "Code")) |>
-  filter(gdp_md > 0, pobreza > 0)
+  filter(gdp_md > 0, pobreza > 0) |>
+  mutate(txt = color_texto(pobreza))
 
-# 3) Tamaño = PIB, color = índice de pobreza multifactorial (MPI)
+# 3) Tamaño = PIB, color = índice de pobreza multidimensional (MPI)
 tm_mf <- mundo |>
   st_drop_geometry() |>
   filter(adm0_a3 != "ATA") |>
@@ -345,17 +439,20 @@ tm_mf <- mundo |>
   transmute(Entity, Year, gdp_md,
             pobreza = `Multidimensional Poverty Index (MPI)`,
             region  = regiones_es[`World region according to OWID`]) |>
-  filter(gdp_md > 0, pobreza > 0)
+  filter(gdp_md > 0, pobreza > 0) |>
+  mutate(txt = color_texto(pobreza))
 
 # Capas comunes a los tres treemaps
 capas_treemap <- list(
-  geom_treemap(color = "white", size = 0.4),
+  geom_treemap(color = "grey55", size = 0.3),
   geom_treemap_subgroup_border(color = "grey15", size = 2),
-  geom_treemap_subgroup_text(place = "center", grow = TRUE, alpha = 0.45,
+  geom_treemap_subgroup_text(place = "center", grow = TRUE, alpha = 0.2,
                              color = "black", fontface = "italic", min.size = 0),
-  geom_treemap_text(color = "white", place = "topleft", reflow = TRUE,
+  # el color del texto sale de la columna txt (ver aes de cada gráfica)
+  geom_treemap_text(place = "topleft", reflow = TRUE,
                     min.size = 6, padding.x = grid::unit(1.5, "mm"),
                     padding.y = grid::unit(1.5, "mm")),
+  scale_colour_identity(),
   theme(legend.position = "bottom",
         legend.key.width = unit(2.5, "cm"),
         legend.key.height = unit(0.35, "cm"),
@@ -366,26 +463,31 @@ capas_treemap <- list(
 
 graficar_treemap <- function(tipo) {
   if (tipo == "poblacion") {
-    ggplot(tm_poblacion, aes(area = pobreza, fill = Population,
+    # Azul = población (otra variable distinta de la pobreza, que va en magma)
+    ggplot(tm_poblacion, aes(area = pobreza, fill = Population, colour = txt,
                              label = Entity, subgroup = region)) +
       capas_treemap +
-      scale_fill_viridis_c(trans = "log10", name = "Población",
-                           labels = label_number(scale_cut = cut_short_scale())) +
+      scale_fill_gradient(low = "#DCEAF7", high = "#08306B", trans = "log10",
+                          name = "Población (más oscuro = más habitantes)",
+                          labels = label_number(scale_cut = cut_short_scale())) +
       labs(title = "Pobreza extrema por región en 2018, coloreado por población",
            caption = "Tamaño: % de la población en pobreza extrema. Color en escala logarítmica.\nFuente: Elaboración propia con datos de Our World in Data")
   } else if (tipo == "extrema") {
-    ggplot(tm_extrema, aes(area = gdp_md, fill = pobreza,
+    # Misma paleta que el mapa: claro = poca pobreza, oscuro = mucha
+    ggplot(tm_extrema, aes(area = gdp_md, fill = pobreza, colour = txt,
                            label = Entity, subgroup = region)) +
       capas_treemap +
-      scale_fill_viridis_c(name = "Pobreza extrema (%)") +
+      scale_fill_viridis_c(option = "magma", direction = -1,
+                           name = "Pobreza extrema (%)") +
       labs(title = "PIB por región en 2018, coloreado por pobreza extrema",
            caption = "Tamaño: PIB del país (millones de USD).\nFuente: Elaboración propia con datos de Our World in Data y Natural Earth")
   } else {
-    ggplot(tm_mf, aes(area = gdp_md, fill = pobreza,
+    ggplot(tm_mf, aes(area = gdp_md, fill = pobreza, colour = txt,
                       label = paste0(Entity, " (", Year, ")"), subgroup = region)) +
       capas_treemap +
-      scale_fill_viridis_c(name = "Índice de pobreza\nmultifactorial (0 a 1)") +
-      labs(title = "PIB por región, coloreado por pobreza multifactorial",
+      scale_fill_viridis_c(option = "magma", direction = -1,
+                           name = "Índice de pobreza\nmultidimensional (0 a 1)") +
+      labs(title = "PIB por región, coloreado por pobreza multidimensional",
            caption = "Tamaño: PIB del país (millones de USD). Entre paréntesis, el año de la encuesta MPI.\nFuente: Elaboración propia con datos de Our World in Data y Natural Earth")
   }
 }
@@ -395,11 +497,13 @@ graficar_treemap <- function(tipo) {
 
 ```{r}
 # Escala fija global (misma para todos los años)
-lim_pob <- range(ext_pob$poblacion, na.rm = TRUE)
+# (antes incluía desde el año -10000, y eso comprimía los colores de hoy)
+lim_pob <- range(ext_pob$poblacion[ext_pob$anio %in% anios], na.rm = TRUE)
 
 grafica_pob <- function(anio_sel) {
   pobreza_ex <- ext_pob %>% filter(anio == anio_sel)
   mundo_pobreza <- mundo %>%
+    filter(adm0_a3 != "ATA") %>%
     left_join(pobreza_ex, by = c("adm0_a3" = "Code"))
 
   ggplot(mundo_pobreza) +
@@ -428,6 +532,7 @@ grafica_cambio <- function(anio_base, anio_sel) {
     select(Code, pob_sel = poblacion)
 
   datos <- mundo %>%
+    filter(adm0_a3 != "ATA") %>%
     left_join(base, by = c("adm0_a3" = "Code")) %>%
     left_join(sel,  by = c("adm0_a3" = "Code")) %>%
     mutate(cambio = (pob_sel / pob_base - 1) * 100)
@@ -436,7 +541,7 @@ grafica_cambio <- function(anio_base, anio_sel) {
     geom_sf(aes(fill = cambio), color = "white", linewidth = 0.1) +
     scale_fill_gradient2(
       low = "#2166ac", mid = "white", high = "#b2182b", midpoint = 0,
-      limits = c(-50, 100), oob = scales::squish,   # recorta extremos
+      limits = c(-50, 250), oob = scales::squish,   # recorta extremos
       na.value = "grey88", name = "Cambio (%)"
     ) +
     coord_sf(crs = "+proj=robin") +
@@ -477,28 +582,34 @@ ui <- dashboardPage(
     tabItems(
       tabItem("cuadroM",
         fluidRow(
-          caja_cm("La mayoría de los países tiene pobreza extrema baja", "cm_hist"),
-          caja_cm("África concentra casi toda la pobreza extrema", "cm_box")
+          caja_cm(tit_hist, "cm_hist"),
+          caja_cm(tit_box, "cm_box")
         ),
         fluidRow(
-          caja_cm("La pobreza extrema mundial se redujo a menos de una cuarta parte", "cm_mundial"),
-          caja_cm("Relación entre pobreza extrema y pobreza multifactorial", "cm_mpi")
+          caja_cm(tit_mundial, "cm_mundial"),
+          caja_cm(tit_mpi, "cm_mpi")
         )
       ),
       tabItem("pobreza",
         fluidRow(
-          box(title = "Países coloreados por último nivel de pobreza extrema/multidimensional registrado",
+          box(title = "Pobreza por país: dato más reciente hasta el año elegido",
               width = 6, status = "primary", solidHeader = TRUE,
               radioButtons("tipo_pobreza", label = NULL,
                            choices = c("Pobreza monetaria" = "mon",
                                        "Pobreza multidimensional" = "mpi"),
                            selected = "mon", inline = TRUE),
-              leafletOutput("mapa", height = 470),
-              footer = tags$small("Fuente: Our World in Data. Último año disponible por país. Haz clic en un país para verlo en la gráfica.",
+              sliderInput("anio_mapa", "Año:",
+                          min = rango_mon[1], max = rango_mon[2],
+                          value = anio_ultimo_obs, step = 1, sep = "",
+                          width = "100%",
+                          animate = animationOptions(interval = 1200)),
+              uiOutput("resumen_mapa"),
+              leafletOutput("mapa", height = 440),
+              footer = tags$small("Fuente: Our World in Data. Haz clic en un país para ver su ficha y resaltarlo en la gráfica.",
                                   style = "color: #777;")),
           box(title = "Pobreza extrema vs pobreza multidimensional",
               width = 6, status = "primary", solidHeader = TRUE,
-              plotOutput("grafica", click = "clic_grafica", height = 507))
+              plotOutput("grafica", click = "clic_grafica", height = 640))
         )
       ),
       tabItem("treeMap",
@@ -507,7 +618,7 @@ ui <- dashboardPage(
           box(
             radioButtons("color_tree", "Color:",
                          c("Población" = "poblacion",
-                           "Pobreza multifactorial" = "mf",
+                           "Pobreza multidimensional" = "mf",
                            "Pobreza extrema" = "extrema")),
             uiOutput("nota_tree"),
             width = 3
@@ -516,14 +627,14 @@ ui <- dashboardPage(
       ),
       tabItem("poblacion",
         fluidRow(
-          box(plotOutput("pob"), width = 9),
+          box(plotOutput("pob", height = 640), width = 9),
           box(
             radioButtons("tipo", "Mostrar:",
                          c("Población" = "nivel", "Cambio % vs año base" = "cambio")),
            sliderTextInput("anio", "Año:",
-                choices = anios, selected = min(anios),
+                choices = anios, selected = max(anios),
                 grid = TRUE,
-                animate = animationOptions(interval = 1000)),
+                animate = animationOptions(interval = 700)),
           conditionalPanel(
             "input.tipo == 'cambio'",
             selectInput("anio_base", "Año base:",
@@ -545,43 +656,75 @@ server <- function(input, output, session) {
   output$cm_mpi     <- renderPlot(g_mpi(),        res = 96)
 
   # ---- Pobreza en el mundo ----
-  output$mapa <- renderLeaflet({
-    leaflet() |> addTiles() |> agregar_capa("mon")
+  # Valores vigentes en el año elegido (se recalcula al mover el slider)
+  datos_sel <- reactive({
+    req(input$anio_mapa)
+    datos_anio(input$anio_mapa)
   })
 
-  # Cambia la capa y la leyenda según la medida seleccionada
+  # Países con las dos medidas en ese año (alimenta la gráfica de dispersión)
+  base_corr_sel <- reactive({
+    datos_sel() |>
+      st_drop_geometry() |>
+      filter(!is.na(pobreza_mon), !is.na(pobreza_mpi))
+  })
+
+  output$mapa <- renderLeaflet({
+    leaflet() |>
+      addTiles() |>
+      setView(lng = 0, lat = 20, zoom = 2) |>
+      agregar_capa(isolate(datos_sel()), isolate(input$tipo_pobreza))
+  })
+
+  # El MPI solo tiene encuestas desde 2014: ajusta el rango del slider
   observeEvent(input$tipo_pobreza, {
+    rng <- if (input$tipo_pobreza == "mpi") rango_mpi else rango_mon
+    updateSliderInput(session, "anio_mapa", min = rng[1], max = rng[2],
+                      value = min(max(input$anio_mapa, rng[1]), rng[2]))
+  }, ignoreInit = TRUE)
+
+  # Redibuja capa y leyenda al cambiar la medida o el año
+  observeEvent(list(datos_sel(), input$tipo_pobreza), {
     leafletProxy("mapa") |>
       clearGroup("paises") |>
       clearControls() |>
-      agregar_capa(input$tipo_pobreza)
+      agregar_capa(datos_sel(), input$tipo_pobreza)
   }, ignoreInit = TRUE)
+
+  output$resumen_mapa <- renderUI({
+    d <- datos_sel()
+    n <- sum(!is.na(if (input$tipo_pobreza == "mon") d$pobreza_mon else d$pobreza_mpi))
+    helpText(paste0(n, " países con dato hasta ", input$anio_mapa,
+                    " (se muestra el último dato observado de cada uno)."))
+  })
 
   pais_sel <- reactiveVal(NULL)
 
-  # Clic en un país del mapa
+  # Clic en un país del mapa: se abre su ficha (popup) y se resalta en la gráfica
   observeEvent(input$mapa_shape_click, {
     pais_sel(sub("^(mon|mpi)_", "", input$mapa_shape_click$id))
   })
 
   # Clic en un punto de la gráfica
   observeEvent(input$clic_grafica, {
-    punto <- nearPoints(base_corr, input$clic_grafica,
+    punto <- nearPoints(base_corr_sel(), input$clic_grafica,
                         xvar = "pobreza_mon", yvar = "pobreza_mpi",
                         threshold = 10, maxpoints = 1)
     if (nrow(punto) == 1) pais_sel(punto$name_en)
   })
 
-  output$grafica <- renderPlot(grafica_correlacion(pais_sel()), res = 96)
+  output$grafica <- renderPlot(
+    grafica_correlacion(pais_sel(), base_corr_sel(), input$anio_mapa),
+    res = 96)
 
   # ---- Treemap ----
   output$tree <- renderPlot(graficar_treemap(input$color_tree), res = 96)
 
   output$nota_tree <- renderUI({
     texto <- switch(input$color_tree,
-      poblacion = "Tamaño: % de la población en pobreza extrema (2018). Color: población del país.",
-      extrema   = "Tamaño: PIB del país. Color: % de la población en pobreza extrema (2018).",
-      mf        = "Tamaño: PIB del país. Color: índice de pobreza multifactorial (MPI), último año de encuesta.")
+      poblacion = "Tamaño: % de la población en pobreza extrema (2018). Color: población del país (más oscuro = más habitantes).",
+      extrema   = "Tamaño: PIB del país. Color: % de la población en pobreza extrema (2018); más oscuro = más pobreza.",
+      mf        = "Tamaño: PIB del país. Color: índice de pobreza multidimensional (MPI), último año de encuesta; más oscuro = más pobreza.")
     helpText(texto)
   })
 
