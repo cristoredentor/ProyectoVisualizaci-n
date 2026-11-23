@@ -218,17 +218,53 @@ g_mundial <- function() {
     tema_cm
 }
 
-g_mpi <- function() {
-  ggplot(comparacion, aes(x = mpi, y = pobreza, color = grupo)) +
+
+# Dispersión entre pobreza extrema y MPI
+# Al seleccionar un país, se resaltan su punto y sus datos
+g_mpi <- function(seleccion = NULL) {
+
+  subtitulo <- NULL
+
+  if (!is.null(seleccion) && nrow(seleccion) == 1) {
+    subtitulo <- sprintf(
+      "%s | Pobreza extrema: %.1f%% (%d) | MPI: %.3f (%d)",
+      seleccion$pais[1],
+      seleccion$pobreza[1],
+      seleccion$anio[1],
+      seleccion$mpi[1],
+      seleccion$anio_mpi[1]
+    )
+  }
+
+  grafica <- ggplot(comparacion, aes(x = mpi, y = pobreza, color = grupo)) +
     geom_smooth(method = "lm", formula = y ~ x, se = FALSE,
                 color = gris, linewidth = 0.6) +
     geom_point(size = 2.4, alpha = 0.85) +
     scale_color_manual(values = c("Resto del mundo" = azul, "África" = "#e8743b")) +
-    labs(x = "Índice de Pobreza Multidimensional (0 a 1)",
+    labs(subtitle = subtitulo,
+         x = "Índice de Pobreza Multidimensional (0 a 1)",
          y = "% en pobreza extrema", color = NULL) +
     tema_cm +
     theme(legend.position = "top")
+
+  # Resaltar el punto seleccionado
+  if (!is.null(seleccion) && nrow(seleccion) == 1) {
+    grafica <- grafica +
+      geom_point(
+        data = seleccion,
+        aes(x = mpi, y = pobreza),
+        inherit.aes = FALSE,
+        shape = 21,
+        size = 5,
+        stroke = 1.3,
+        color = "black",
+        fill = NA
+      )
+  }
+
+  grafica
 }
+
 ```
 
 # Pobreza en el mundo: mapa + correlación
@@ -463,13 +499,13 @@ capas_treemap <- list(
 
 graficar_treemap <- function(tipo) {
   if (tipo == "poblacion") {
-    # Azul = población (otra variable distinta de la pobreza, que va en magma)
+    # Viridis invertida para población (amarillo = menos, morado = más)
     ggplot(tm_poblacion, aes(area = pobreza, fill = Population, colour = txt,
                              label = Entity, subgroup = region)) +
       capas_treemap +
-      scale_fill_gradient(low = "#DCEAF7", high = "#08306B", trans = "log10",
-                          name = "Población (más oscuro = más habitantes)",
-                          labels = label_number(scale_cut = cut_short_scale())) +
+      scale_fill_viridis_c(option = "viridis", direction = -1, trans = "log10",
+                    name = "Población (más oscuro = más habitantes)",
+                    labels = label_number(scale_cut = cut_short_scale())) +
       labs(title = "Pobreza extrema por región en 2018, coloreado por población",
            caption = "Tamaño: % de la población en pobreza extrema. Color en escala logarítmica.\nFuente: Elaboración propia con datos de Our World in Data")
   } else if (tipo == "extrema") {
@@ -557,13 +593,131 @@ grafica_cambio <- function(anio_base, anio_sel) {
 # Aplicación shiny
 
 ```{r}
-# Caja con encabezado (título) y pie (fuente) para el cuadro de mando
-caja_cm <- function(titulo, id, pie = fuente_pip) {
-  box(title = titulo, width = 6, status = "primary", solidHeader = TRUE,
-      plotOutput(id, height = "360px"),
-      footer = tags$small(pie, style = "color: #777;"))
-}
 
+  # Caja con encabezado (título) y pie (fuente) para el cuadro de mando
+  # El argumento click permite añadir interactividad cuando sea necesario
+  caja_cm <- function(titulo, id, pie = fuente_pip, click = NULL) {
+    box(title = titulo, width = 6, status = "primary", solidHeader = TRUE,
+        plotOutput(id, click = click, height = "360px"),
+        footer = tags$small(pie, style = "color: #777;"))
+  }
+
+  # Mapa interactivo de población por año
+  # Muestra la población al pasar el cursor o hacer clic en un país
+  mapa_poblacion <- function(anio_sel, tipo, anio_base = NULL) {
+    if (tipo == "nivel") {
+      datos <- ext_pob |>
+        filter(anio == anio_sel)
+      d <- mundo |>
+        filter(adm0_a3 != "ATA") |>
+        left_join(datos, by = c("adm0_a3" = "Code"))
+  
+      # Etiquetas y fichas del mapa
+      pob <- ifelse(is.na(d$poblacion), "Sin dato",
+                    format(round(d$poblacion), big.mark = ",",
+                           scientific = FALSE))
+  
+      texto <- sprintf(
+        "<strong>%s</strong><br/>Año: %s<br/>Población: %s",
+        d$name_en, anio_sel, pob
+      )
+  
+      # Misma escala logarítmica y colores que el mapa original
+      pal <- colorNumeric(
+        palette = viridisLite::viridis(256, direction = -1),
+        domain = log10(lim_pob),
+        na.color = gris_na
+      )
+  
+      leaflet(d) |>
+        addTiles() |>
+        setView(lng = 0, lat = 20, zoom = 2) |>
+        addPolygons(
+          fillColor = ~pal(log10(poblacion)), fillOpacity = 0.9,
+          weight = 0.5, color = "white",
+          label = lapply(texto, htmltools::HTML),
+          popup = texto,
+          highlightOptions = resaltado
+        ) |>
+        addLegend(
+          colors = pal(log10(c(1e5, 1e6, 1e7, 1e8, 1e9))),
+          labels = c("100 mil", "1 millón", "10 millones",
+                     "100 millones", "1,000 millones"),
+          title = "Población",
+          position = "bottomleft"
+        )
+  
+    } else {
+  
+      # Población en el año base y el año seleccionado
+      base <- ext_pob |>
+        filter(anio == anio_base) |>
+        select(Code, pob_base = poblacion)
+  
+      sel <- ext_pob |>
+        filter(anio == anio_sel) |>
+        select(Code, pob_sel = poblacion)
+  
+      d <- mundo |>
+        filter(adm0_a3 != "ATA") |>
+        left_join(base, by = c("adm0_a3" = "Code")) |>
+        left_join(sel, by = c("adm0_a3" = "Code")) |>
+        mutate(
+          cambio = (pob_sel / pob_base - 1) * 100,
+          cambio_color = scales::squish(cambio, c(-50, 250))
+        )
+  
+      # Etiquetas y fichas con los datos de ambos años
+      pob_base <- ifelse(is.na(d$pob_base), "Sin dato",
+                         format(round(d$pob_base), big.mark = ",",
+                                scientific = FALSE))
+  
+      pob_sel <- ifelse(is.na(d$pob_sel), "Sin dato",
+                        format(round(d$pob_sel), big.mark = ",",
+                               scientific = FALSE))
+  
+      cambio <- ifelse(is.na(d$cambio), "Sin dato",
+                       paste0(round(d$cambio, 2), "%"))
+  
+      texto <- sprintf(
+        paste0("<strong>%s</strong><br/>",
+               "Población en %s: %s<br/>",
+               "Población en %s: %s<br/>",
+               "Cambio: %s"),
+        d$name_en, anio_base, pob_base,
+        anio_sel, pob_sel, cambio
+      )
+  
+      # Escala divergente centrada en cero, de -50% a 250%
+      colores <- c(
+        colorRampPalette(c("#2166ac", "white"))(51),
+        colorRampPalette(c("white", "#b2182b"))(251)[-1]
+      )
+      
+      pal <- colorNumeric(
+        palette = colores,
+        domain = c(-50, 250),
+        na.color = gris_na
+      )
+  
+      leaflet(d) |>
+        addTiles() |>
+        setView(lng = 0, lat = 20, zoom = 2) |>
+        addPolygons(
+          fillColor = ~pal(cambio_color), fillOpacity = 0.9,
+          weight = 0.5, color = "white",
+          label = lapply(texto, htmltools::HTML),
+          popup = texto,
+          highlightOptions = resaltado
+        ) |>
+        addLegend(
+          pal = pal, values = c(-50, 250),
+          title = "Cambio de población (%)",
+          position = "bottomleft"
+        )
+    }
+  }
+  
 ui <- dashboardPage(
   dashboardHeader(title = "Pobreza"),
   dashboardSidebar(
@@ -587,7 +741,7 @@ ui <- dashboardPage(
         ),
         fluidRow(
           caja_cm(tit_mundial, "cm_mundial"),
-          caja_cm(tit_mpi, "cm_mpi")
+          caja_cm(tit_mpi, "cm_mpi", click = "clic_cm_mpi")
         )
       ),
       tabItem("pobreza",
@@ -627,7 +781,18 @@ ui <- dashboardPage(
       ),
       tabItem("poblacion",
         fluidRow(
-          box(plotOutput("pob", height = 640), width = 9),
+          box(
+              title = "Población por país",
+              width = 9,
+              status = "primary",
+              solidHeader = TRUE,
+              leafletOutput("pob", height = 640),
+              footer = tags$small(
+                "Fuente: Our World in Data. ",
+                "Pasa el cursor sobre un país para consultar su población.",
+                style = "color: #777;"
+              )
+            ),
           box(
             radioButtons("tipo", "Mostrar:",
                          c("Población" = "nivel", "Cambio % vs año base" = "cambio")),
@@ -649,11 +814,29 @@ ui <- dashboardPage(
 )
 
 server <- function(input, output, session) {
+ 
   # ---- Cuadro de mando ----
   output$cm_hist    <- renderPlot(g_histograma(), res = 96)
   output$cm_box     <- renderPlot(g_boxplot(),    res = 96)
   output$cm_mundial <- renderPlot(g_mundial(),    res = 96)
-  output$cm_mpi     <- renderPlot(g_mpi(),        res = 96)
+  
+  # País seleccionado en la dispersión MPI
+  pais_cm_mpi <- reactiveVal(NULL)
+  
+  # Clic en un punto: identifica y guarda el país seleccionado
+  observeEvent(input$clic_cm_mpi, {
+    punto <- nearPoints(
+      comparacion, input$clic_cm_mpi,
+      xvar = "mpi", yvar = "pobreza",
+      threshold = 10, maxpoints = 1
+    )
+  
+    if (nrow(punto) == 1) pais_cm_mpi(punto)
+  })
+  
+  # Actualiza la gráfica con el país seleccionado
+  output$cm_mpi <- renderPlot(g_mpi(pais_cm_mpi()), res = 96)
+
 
   # ---- Pobreza en el mundo ----
   # Valores vigentes en el año elegido (se recalcula al mover el slider)
@@ -729,13 +912,15 @@ server <- function(input, output, session) {
   })
 
   # ---- Población por año ----
-  output$pob <- renderPlot({
-    req(input$anio)
+  output$pob <- renderLeaflet({
+    req(input$anio, input$tipo)
+  
     if (input$tipo == "nivel") {
-      grafica_pob(input$anio)
+      mapa_poblacion(as.numeric(input$anio), "nivel")
     } else {
       req(input$anio_base)
-      grafica_cambio(as.numeric(input$anio_base), input$anio)
+      mapa_poblacion(as.numeric(input$anio), "cambio",
+                     as.numeric(input$anio_base))
     }
   })
 }
