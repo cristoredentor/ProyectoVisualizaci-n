@@ -151,13 +151,9 @@ comparacion <- mpi_raw |>
   mutate(grupo = factor(region_mpi == "Africa", levels = c(FALSE, TRUE),
                         labels = c("Resto del mundo", "África")))
 
-# Etiquetas del boxplot con el número de países, para no escribir "n = "
-# dentro del área de la gráfica (se encimaba con los puntos).
+# Etiquetas del boxplot: nombre de la región en español
 conteo_region <- count(ultimo, region)
-etiquetas_region <- setNames(
-  paste0(regiones_es[conteo_region$region], " (n = ", conteo_region$n, ")"),
-  conteo_region$region
-)
+etiquetas_region <- setNames(regiones_es[conteo_region$region], conteo_region$region)
 
 fuente_pip <- "Fuente: Elaboración propia con datos de Banco Mundial PIP, procesado por Our World in Data"
 
@@ -170,7 +166,7 @@ reg_max <- ultimo |>
   summarise(mediana = median(pobreza), .groups = "drop") |>
   slice_max(mediana, n = 1, with_ties = FALSE)
 med_resto <- median(ultimo$pobreza[ultimo$region != reg_max$region])
-tit_box <- paste(regiones_es[[reg_max$region]], "tiene la mayor pobreza extrema")
+tit_box <- paste(regiones_es[[reg_max$region]], "tiene la mayor cantidad de países en pobreza extrema")
 
 ini_m <- serie_mundial[which.min(serie_mundial$anio), ]
 fin_m <- serie_mundial[which.max(serie_mundial$anio), ]
@@ -242,7 +238,19 @@ g_mpi <- function(seleccion = NULL) {
         stroke = 1.3,
         color = "black",
         fill = NA
-      )
+      ) +
+      # Nombre del país en negro junto al punto seleccionado
+      geom_label(
+        data = seleccion,
+        aes(x = mpi, y = pobreza, label = pais),
+        inherit.aes = FALSE,
+        color = "black",
+        fontface = "bold",
+        vjust = -0.9,
+        linewidth = 0,
+        alpha = 0.85
+      ) +
+      coord_cartesian(clip = "off")   # que la etiqueta no se corte en el borde
   }
 
   grafica
