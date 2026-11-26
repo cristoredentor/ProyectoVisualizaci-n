@@ -185,7 +185,7 @@ tema_cm <- theme_minimal(base_size = 14) +
 g_histograma <- function() {
   ggplot(ultimo, aes(x = pobreza)) +
     geom_histogram(binwidth = 5, fill = azul, color = "white") +
-    labs(x = "% en pobreza extrema", y = "Número de países") +
+    labs(x = "% de la población en pobreza extrema", y = "Número de países") +
     tema_cm
 }
 
@@ -207,7 +207,7 @@ g_mundial <- function() {
     geom_point(color = azul, size = 1.6) +
     # El eje Y arranca en 0 para no exagerar la caída
     scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.05))) +
-    labs(x = "Año", y = "% de pobreza extrema") +
+    labs(x = "Año", y = "% de la población en pobreza extrema") +
     tema_cm
 }
 
@@ -222,7 +222,7 @@ g_mpi <- function(seleccion = NULL) {
     geom_point(size = 2.4, alpha = 0.85) +
     scale_color_manual(values = c("Resto del mundo" = azul, "África" = "#e8743b")) +
     labs(x = "Índice de Pobreza Multidimensional (0 a 1)",
-         y = "% en pobreza extrema", color = NULL) +
+         y = "% de la población en pobreza extrema", color = NULL) +
     tema_cm +
     theme(legend.position = "top")
 
@@ -462,7 +462,7 @@ grafica_correlacion <- function(pais, base, anio) {
                fontface = "bold", vjust = -0.9, linewidth = 0, alpha = 0.85) +
     coord_cartesian(xlim = lim_x, ylim = lim_y) +
     labs(subtitle = subtitulo,
-         x = "Población en pobreza extrema (%)",
+         x = "% de la población en pobreza extrema",
          y = "Índice de pobreza multidimensional (%)",
          caption = paste0("Fuente: Our World in Data. Último dato disponible de cada país hasta ", anio, ".")) +
     theme_minimal(base_size = 14) +
@@ -550,7 +550,7 @@ graficar_treemap <- function(tipo) {
                            label = Entity, subgroup = region)) +
       capas_treemap +
       scale_fill_viridis_c(option = "magma", direction = -1,
-                           name = "Pobreza extrema (%)") +
+                           name = "% de la población en pobreza extrema") +
       labs(title = "PIB por región en 2018, coloreado por pobreza extrema",
            caption = "Tamaño: PIB del país (millones de USD).\nFuente: Elaboración propia con datos de Our World in Data y Natural Earth")
   } else {
