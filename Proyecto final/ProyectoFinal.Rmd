@@ -196,7 +196,7 @@ g_boxplot <- function() {
                color = azul, alpha = 0.6, size = 1.8) +
     scale_x_discrete(labels = etiquetas_region) +
     coord_flip() +
-    labs(x = NULL, y = "% de la población bajo 3 USD/día") +
+    labs(x = NULL, y = "% de la población en pobreza extrema") +
     tema_cm +
     theme(panel.grid.major.y = element_blank())
 }
@@ -392,6 +392,36 @@ recolorear <- function(id_mapa, ids, colores, etiquetas, popups,
     etiquetas = vapply(etiquetas, as.character, character(1)),
     popups = unname(as.character(popups))
   ))
+}
+
+# Encuadre de un país para hacerle zoom: se usa su polígono más grande
+# (así Francia o EE.UU. no incluyen territorios de ultramar) y un punto
+# dentro de ese polígono para abrir la ficha.
+encuadre_pais <- function(nombre) {
+  g <- st_geometry(mundo_geo[mundo_geo$name_en == nombre, ])
+  if (length(g) == 0) return(NULL)
+  partes <- suppressWarnings(st_cast(g[1], "POLYGON"))
+  principal <- partes[which.max(st_area(partes))]
+  bb <- st_bbox(principal)
+  centro <- tryCatch(
+    st_coordinates(suppressWarnings(st_point_on_surface(principal))),
+    error = function(e) cbind(mean(bb[c("xmin", "xmax")]), mean(bb[c("ymin", "ymax")]))
+  )
+  list(bb = bb, lng = centro[1, 1], lat = centro[1, 2])
+}
+
+# Hace zoom al país y abre su ficha, como si se le hubiera hecho clic en el mapa
+zoom_pais <- function(mapa, nombre, d) {
+  e <- encuadre_pais(nombre)
+  if (is.null(e)) return(mapa)
+  ficha <- textos_mapa(d[d$name_en == nombre, ])$popup
+  mapa |>
+    clearPopups() |>
+    flyToBounds(e$bb[["xmin"]], e$bb[["ymin"]], e$bb[["xmax"]], e$bb[["ymax"]],
+                options = list(maxZoom = 6, paddingTopLeft = c(20, 120),
+                               paddingBottomRight = c(20, 20))) |>
+    addPopups(lng = e$lng, lat = e$lat, popup = ficha,
+              options = popupOptions(autoPan = FALSE))
 }
 
 # Ejes fijos para que la gráfica no "salte" al cambiar de año
@@ -855,15 +885,22 @@ server <- function(input, output, session) {
   # País seleccionado en la dispersión MPI
   pais_cm_mpi <- reactiveVal(NULL)
   
-  # Clic en un punto: identifica y guarda el país seleccionado
+  # Clic en un punto: lo selecciona. Un segundo clic en el mismo punto lo deselecciona.
   observeEvent(input$clic_cm_mpi, {
     punto <- nearPoints(
       comparacion, input$clic_cm_mpi,
       xvar = "mpi", yvar = "pobreza",
       threshold = 10, maxpoints = 1
     )
-  
-    if (nrow(punto) == 1) pais_cm_mpi(punto)
+
+    if (nrow(punto) == 1) {
+      actual <- pais_cm_mpi()
+      if (!is.null(actual) && actual$codigo == punto$codigo) {
+        pais_cm_mpi(NULL)
+      } else {
+        pais_cm_mpi(punto)
+      }
+    }
   })
   
   # Actualiza la gráfica con el país seleccionado
@@ -903,6 +940,7 @@ server <- function(input, output, session) {
     tx <- textos_mapa(d)
     recolorear("mapa", d$adm0_a3, colores_mapa(d, input$tipo_pobreza),
                tx$etiqueta, tx$popup)
+    leafletProxy("mapa") |> clearPopups()   # la ficha abierta tendría datos de otro año
   }, ignoreInit = TRUE)
 
   # La leyenda solo cambia cuando cambia la medida
@@ -931,7 +969,10 @@ server <- function(input, output, session) {
     punto <- nearPoints(base_corr_sel(), input$clic_grafica,
                         xvar = "pobreza_mon", yvar = "pobreza_mpi",
                         threshold = 10, maxpoints = 1)
-    if (nrow(punto) == 1) pais_sel(punto$name_en)
+    if (nrow(punto) == 1) {
+      pais_sel(punto$name_en)
+      leafletProxy("mapa") |> zoom_pais(punto$name_en, datos_sel())
+    }
   })
 
   output$grafica <- renderPlot(
