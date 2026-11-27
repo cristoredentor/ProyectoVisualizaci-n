@@ -71,39 +71,6 @@ mpi <- mpi_raw |>
             region = first(region), .groups = "drop")
 ```
 
-# Datos de población
-```{r}
-ext_pob <- ext_raw |>
-  transmute(
-    pais = Entity,
-    Code = ifelse(Code == "OWID_KOS", "KOS", Code),  # Kosovo: código del mapa
-    anio = Year,
-    poblacion = Population,
-    region = `World region according to OWID`
-  ) |>
-  filter(!is.na(Code), nchar(Code) == 3, !grepl("^OWID", Code), !is.na(anio)) |>
-  group_by(Code, anio) |>
-  summarise(
-    pais = first(pais),
-    poblacion = mean(poblacion, na.rm = TRUE),
-    region = first(region),
-    .groups = "drop"
-  )
-```
-
-```{r}
-# Años que se pueden ver en el mapa de población: los mismos años de la información
-# de pobreza (serie mundial observada, con población; después solo hay proyecciones).
-# Antes se usaban décadas desde 1600, estimaciones históricas sin relación con la pobreza.
-anios <- ext_raw |>
-  filter(Entity == "World",
-         !is.na(`Share of population in poverty ($3 a day)`),
-         !is.na(Population)) |>
-  pull(Year) |>
-  unique() |>
-  sort()
-```
-
 # Cuadro de mando: datos y gráficas del análisis exploratorio
 
 Se replica la misma limpieza de AnalisisExploratorio.Rmd: filas con dato de
@@ -258,11 +225,13 @@ g_mpi <- function(seleccion = NULL) {
 
 ```
 
-# Pobreza en el mundo: mapa + correlación
+# Pobreza en el mundo y por continente: mapas + regresión
 
-Paleta *magma* invertida de la primera gráfica de Gráficas Avanzadas
-(claro = poca pobreza, oscuro = mucha). El mapa ahora se puede consultar **por año**:
-para el año elegido, cada país muestra su dato más reciente hasta ese año.
+Paleta secuencial de morados con intervalos fijos (claro = poca pobreza,
+oscuro = mucha; gris = sin dato). Los mapas se consultan **por año límite**:
+para el año elegido, cada país muestra su último dato observado hasta ese año,
+que puede ser de un año anterior. Las mismas funciones sirven para el mapa
+mundial y para el análisis por continente.
 
 ```{r}
 # ---- Series completas por país, solo datos observados (nada de proyecciones) ----
@@ -283,8 +252,24 @@ serie_mpi <- mpi_raw |>
 rango_mon <- range(serie_mon$anio)
 rango_mpi <- range(serie_mpi$anio)
 
-# Geometría fija: solo cambian los valores, no hace falta volver a unir sf cada vez
-mundo_geo <- mundo |> select(adm0_a3, name_en, pop_est)
+# Los selectores de año empiezan en 1990. Los datos no se recortan: un país
+# cuyo último dato sea anterior a 1990 sigue mostrándolo (con su año en la ficha).
+# El MPI conserva su propio inicio (sus encuestas empiezan en 2014).
+anio_inicio <- 1990
+rango_mon_mapa <- c(max(anio_inicio, rango_mon[1]), rango_mon[2])
+rango_mpi_mapa <- c(max(anio_inicio, rango_mpi[1]), rango_mpi[2])
+
+# Geometría fija: solo cambian los valores, no hace falta volver a unir sf cada vez.
+# Natural Earth usa códigos propios para algunos países; se pasan al código ISO
+# que usa Our World in Data (si no, Sudán del Sur y Palestina quedaban sin dato).
+mundo_geo <- mundo |>
+  mutate(adm0_a3 = dplyr::recode(adm0_a3, SDS = "SSD", PSX = "PSE", SAH = "ESH")) |>
+  select(adm0_a3, name_en, pop_est, continent)
+
+nombre_pais <- function(codigo) {
+  nombre <- mundo_geo$name_en[match(codigo, mundo_geo$adm0_a3)]
+  ifelse(is.na(nombre), codigo, nombre)
+}
 
 # Dato más reciente de cada país con año <= anio_sel, sin importar qué tan viejo sea.
 # Si el país no tiene ningún dato hasta ese año, queda sin dato (no se inventa nada).
@@ -296,7 +281,9 @@ dato_al_anio <- function(serie, anio_sel) {
     ungroup()
 }
 
-# Mapa (sf) con los valores vigentes en el año elegido
+# Mapa (sf) con los valores vigentes en el año elegido.
+# Cada indicador guarda su propio año de referencia (anio_mon, anio_mpi):
+# para un mismo país pueden ser distintos.
 datos_anio <- function(anio_sel) {
   mon <- dato_al_anio(serie_mon, anio_sel)
   mpi <- dato_al_anio(serie_mpi, anio_sel)
@@ -312,7 +299,7 @@ datos_anio <- function(anio_sel) {
   d
 }
 
-# ---- Etiquetas (hover), fichas (clic) y paletas del mapa ----
+# ---- Etiquetas (hover del mapa) y fichas (clic) ----
 fmt <- function(x, anio, anio_sel) {
   ifelse(is.na(x), paste0("sin dato hasta ", anio_sel),
          paste0(round(x, 1), "% (", anio, ")"))
@@ -328,147 +315,251 @@ textos_mapa <- function(d) {
       sprintf("<strong>%s</strong><br/>Pobreza monetaria: %s<br/>Pobreza multidimensional: %s",
               d$name_en, mon, mpi),
       htmltools::HTML),
-    # ficha que se abre al hacer clic en el país
+    # ficha que se abre al seleccionar el país (clic en el mapa o en la gráfica)
     popup = sprintf(
       paste0("<div style='min-width:210px'>",
              "<h4 style='margin:0 0 6px 0'>%s</h4>",
              "<b>Pobreza monetaria (3 USD/día):</b> %s<br/>",
              "<b>Pobreza multidimensional:</b> %s<br/>",
-             "<b>Población (est.):</b> %s</div>"),
-      d$name_en, mon, mpi, pob)
+             "<b>Población (est.):</b> %s<br/>",
+             "<small style='color:#777'>Último dato observado hasta %s</small></div>"),
+      d$name_en, mon, mpi, pob, d$anio_sel)
   )
 }
 
-paleta_magma <- viridisLite::magma(6, direction = -1)
-gris_na <- "#E0E0E0"   # = grey88, el gris de los países sin dato
+# ---- Paleta secuencial de morados con intervalos fijos (bins) ----
+# Los cortes son los mismos en todos los años y en las dos secciones de mapas,
+# para poder comparar la evolución. Se eligieron con la distribución país-año
+# desde 1990:
+#  - Pobreza monetaria: mediana 2.6%, p75 17%, p90 44%, máximo 95%.
+#  - MPI x 100: mediana 3.8, p75 22, p90 34, máximo 52.
+# Los primeros cortes (1, 3, 10) son iguales en los dos indicadores. Los cortes
+# altos siguen el rango de cada uno (el MPI casi nunca pasa de 50).
+paleta_morados <- c("#e3d5f5", "#c4a8e8", "#a27dd6", "#7f55bf", "#5c31a0", "#3b0f70")
+gris_na <- "#BDBDBD"   # países sin dato (se dibujan además semitransparentes)
+cortes_mon <- c(0, 1, 3, 10, 25, 50, 100)
+cortes_mpi <- c(0, 1, 3, 10, 20, 35, 100)
 
-# dominio fijo 0-100 para que la leyenda no falle si un año no tiene datos
-pal_mon <- colorBin(palette = paleta_magma, domain = c(0, 100),
-                    bins = c(0, 2, 5, 10, 20, 40, 100), na.color = gris_na)
-pal_mpi <- colorBin(palette = paleta_magma, domain = c(0, 100),
-                    bins = c(0, 5, 10, 20, 40, 60, 100), na.color = gris_na)
+# Un 0% observado cae en el primer intervalo; solo el NA (sin dato) va en gris
+pal_mon <- colorBin(palette = paleta_morados, domain = c(0, 100),
+                    bins = cortes_mon, na.color = gris_na)
+pal_mpi <- colorBin(palette = paleta_morados, domain = c(0, 100),
+                    bins = cortes_mpi, na.color = gris_na)
+
+valor_mapa   <- function(d, tipo) if (tipo == "mon") d$pobreza_mon else d$pobreza_mpi
+colores_mapa <- function(d, tipo) (if (tipo == "mon") pal_mon else pal_mpi)(valor_mapa(d, tipo))
+# Sin dato: gris y semitransparente, para no confundirlo con el tono más claro
+opacidad_mapa <- function(d, tipo) ifelse(is.na(valor_mapa(d, tipo)), 0.45, 0.9)
 
 resaltado <- highlightOptions(weight = 2, color = "#333333", bringToFront = TRUE)
 
-# Color de relleno de cada país según la medida elegida ("mon" o "mpi")
-colores_mapa <- function(d, tipo) {
-  if (tipo == "mon") pal_mon(d$pobreza_mon) else pal_mpi(d$pobreza_mpi)
-}
-
 leyenda_mapa <- function(mapa, tipo) {
   if (tipo == "mon") {
-    addLegend(mapa, pal = pal_mon, values = c(0, 100),
+    addLegend(mapa, pal = pal_mon, values = c(0, 100, NA), opacity = 0.9,
               title = "Pobreza monetaria (%)", na.label = "Sin dato",
+              labFormat = labelFormat(between = " – "),
               position = "bottomleft")
   } else {
-    addLegend(mapa, pal = pal_mpi, values = c(0, 100),
-              title = "Pobreza multidimensional (%)", na.label = "Sin dato",
+    addLegend(mapa, pal = pal_mpi, values = c(0, 100, NA), opacity = 0.9,
+              title = "Pobreza multidimensional<br/>(MPI × 100)", na.label = "Sin dato",
+              labFormat = labelFormat(between = " – "),
               position = "bottomleft")
   }
 }
 
 # Dibuja los polígonos UNA sola vez. El layerId es el código del país para
 # después poder cambiarles el color sin borrarlos (ver recolorear()).
+# No se les liga la ficha: la abre zoom_pais() al seleccionar el país, así
+# el clic en el mapa y el clic en la gráfica hacen exactamente lo mismo.
 agregar_capa <- function(mapa, d, tipo) {
   tx <- textos_mapa(d)
   mapa |>
     addPolygons(data = d, group = "paises", layerId = ~adm0_a3,
-                fillColor = colores_mapa(d, tipo), fillOpacity = 0.9,
+                fillColor = colores_mapa(d, tipo),
+                fillOpacity = opacidad_mapa(d, tipo),
                 weight = 0.5, color = "white",
-                label = tx$etiqueta, popup = tx$popup,
+                label = tx$etiqueta,
                 highlightOptions = resaltado) |>
     leyenda_mapa(tipo)
 }
 
-# Cambia color, etiqueta y ficha de polígonos que ya están en el mapa.
+# Cambia color, opacidad y etiqueta de polígonos que ya están en el mapa.
 # Como no se borran ni se vuelven a crear, la transición CSS (ver la UI)
 # desvanece el color viejo hacia el nuevo en lugar de cambiarlo de golpe.
-recolorear <- function(id_mapa, ids, colores, etiquetas, popups,
+recolorear <- function(id_mapa, d, tipo,
                        session = shiny::getDefaultReactiveDomain()) {
   session$sendCustomMessage("recolorear", list(
     id = id_mapa,
-    ids = as.character(ids),
-    colores = unname(colores),
-    etiquetas = vapply(etiquetas, as.character, character(1)),
-    popups = unname(as.character(popups))
+    ids = as.character(d$adm0_a3),
+    colores = unname(colores_mapa(d, tipo)),
+    opacidades = unname(opacidad_mapa(d, tipo)),
+    etiquetas = vapply(textos_mapa(d)$etiqueta, as.character, character(1))
   ))
 }
 
-# Encuadre de un país para hacerle zoom: se usa su polígono más grande
-# (así Francia o EE.UU. no incluyen territorios de ultramar) y un punto
-# dentro de ese polígono para abrir la ficha.
-encuadre_pais <- function(nombre) {
-  g <- st_geometry(mundo_geo[mundo_geo$name_en == nombre, ])
+# Polígono más grande de un país (así Francia o EE.UU. no incluyen territorios
+# de ultramar ni islas al otro lado del meridiano 180)
+poligono_principal <- function(g) {
+  partes <- suppressWarnings(st_cast(g, "POLYGON"))
+  partes[which.max(st_area(partes))]
+}
+
+# Encuadre CONTEXTUAL de un país: centro de su territorio principal y un zoom
+# que depende de su tamaño, acotado entre 3 y 5. Con eso el país se identifica
+# pero también se ven sus vecinos (sirve para ver si es parte de un conjunto
+# regional con niveles parecidos o una excepción en su entorno).
+encuadre_pais <- function(codigo) {
+  g <- st_geometry(mundo_geo[mundo_geo$adm0_a3 == codigo, ])
   if (length(g) == 0) return(NULL)
-  partes <- suppressWarnings(st_cast(g[1], "POLYGON"))
-  principal <- partes[which.max(st_area(partes))]
+  principal <- poligono_principal(g[1])
   bb <- st_bbox(principal)
-  centro <- tryCatch(
+  tam <- max(bb[["xmax"]] - bb[["xmin"]], 1.5 * (bb[["ymax"]] - bb[["ymin"]]), 0.5)
+  zoom <- min(max(floor(log2(400 / tam)), 3), 5)
+  punto <- tryCatch(
     st_coordinates(suppressWarnings(st_point_on_surface(principal))),
     error = function(e) cbind(mean(bb[c("xmin", "xmax")]), mean(bb[c("ymin", "ymax")]))
   )
-  list(bb = bb, lng = centro[1, 1], lat = centro[1, 2])
+  list(lng_centro = mean(bb[c("xmin", "xmax")]), lat_centro = mean(bb[c("ymin", "ymax")]),
+       zoom = zoom, lng = punto[1, 1], lat = punto[1, 2])
 }
 
-# Hace zoom al país y abre su ficha, como si se le hubiera hecho clic en el mapa
-zoom_pais <- function(mapa, nombre, d) {
-  e <- encuadre_pais(nombre)
-  if (is.null(e)) return(mapa)
-  ficha <- textos_mapa(d[d$name_en == nombre, ])$popup
+# Selecciona un país en un mapa (o leafletProxy): contorno negro encima de
+# todos los países, vuelo con zoom contextual y su ficha con los datos del año.
+zoom_pais <- function(mapa, codigo, d) {
+  e <- encuadre_pais(codigo)
+  fila <- d[d$adm0_a3 == codigo, ]
+  if (is.null(e) || nrow(fila) == 0) return(mapa)
   mapa |>
+    clearGroup("seleccion") |>
     clearPopups() |>
-    flyToBounds(e$bb[["xmin"]], e$bb[["ymin"]], e$bb[["xmax"]], e$bb[["ymax"]],
-                options = list(maxZoom = 6, paddingTopLeft = c(20, 120),
-                               paddingBottomRight = c(20, 20))) |>
-    addPopups(lng = e$lng, lat = e$lat, popup = ficha,
+    addPolygons(data = fila, group = "seleccion", fill = FALSE,
+                color = "#111111", weight = 3, opacity = 1,
+                options = pathOptions(pane = "seleccion", interactive = FALSE)) |>
+    flyTo(e$lng_centro, e$lat_centro, zoom = e$zoom) |>
+    addPopups(lng = e$lng, lat = e$lat, popup = textos_mapa(fila)$popup,
               options = popupOptions(autoPan = FALSE))
 }
 
-# Ejes fijos para que la gráfica no "salte" al cambiar de año
+quitar_seleccion <- function(mapa) {
+  mapa |> clearGroup("seleccion") |> clearPopups()
+}
+
+# ---- Continentes (Natural Earth) para el análisis por continente ----
+# Natural Earth ya separa América del Norte (con Centroamérica y el Caribe)
+# y América del Sur. Se omiten Antártida y las islas de "Seven seas".
+cont_disp <- setdiff(unique(mundo_geo$continent), c("Antarctica", "Seven seas (open ocean)"))
+cont_disp <- names(regiones_es)[names(regiones_es) %in% cont_disp]
+continentes <- setNames(cont_disp, ifelse(cont_disp == "North America",
+                                          "Norteamérica (con Centroamérica y el Caribe)",
+                                          regiones_es[cont_disp]))
+
+# Encuadre de cada continente con el territorio principal de sus países.
+# Se ignoran islas pequeñas (< 1 millón de hab.) y países enormes que cruzan
+# medio mundo (Rusia en Europa), que harían que el encuadre fuera todo el planeta.
+encuadre_continente <- function(cont) {
+  g <- mundo_geo[mundo_geo$continent == cont, ]
+  cajas <- do.call(rbind, lapply(seq_len(nrow(g)), function(i) {
+    bb <- st_bbox(poligono_principal(st_geometry(g)[i]))
+    data.frame(xmin = bb[["xmin"]], ymin = bb[["ymin"]], xmax = bb[["xmax"]], ymax = bb[["ymax"]],
+               pop = g$pop_est[i])
+  }))
+  usar <- cajas$pop >= 1e6 & (cajas$xmax - cajas$xmin) < 90
+  if (!any(usar)) usar <- rep(TRUE, nrow(cajas))
+  c(lng1 = min(cajas$xmin[usar]), lat1 = min(cajas$ymin[usar]),
+    lng2 = max(cajas$xmax[usar]), lat2 = max(cajas$ymax[usar]))
+}
+encuadres_cont <- lapply(setNames(cont_disp, cont_disp), encuadre_continente)
+
+# ---- Gráfica de dispersión (regresión) ----
+# Mínimo de países para calcular la recta y su intervalo de confianza
+min_paises_reg <- 5
+
+# Ejes fijos del mapa mundial para que la gráfica no "salte" al cambiar de año
 lim_x <- c(0, ceiling(max(serie_mon$valor)))
 lim_y <- c(0, ceiling(max(serie_mpi$valor)))
 
-# base = países con las dos medidas en el año elegido
-grafica_correlacion <- function(pais, base, anio) {
-  sel <- if (is.null(pais)) base[0, ] else filter(base, name_en == pais)
+# base   = países con las dos medidas vigentes en el año elegido (sin geometría)
+# codigo = país seleccionado (código ISO) o NULL
+# Si no se dan límites, se calculan con los países de la base (análisis continental)
+grafica_correlacion <- function(codigo, base, anio, lim_x = NULL, lim_y = NULL,
+                                ambito = "el mundo") {
+  sel <- if (is.null(codigo)) base[0, ] else filter(base, adm0_a3 == codigo)
+  n <- nrow(base)
+
+  if (is.null(lim_x)) lim_x <- c(0, max(5, 1.08 * max(base$pobreza_mon, 0)))
+  if (is.null(lim_y)) lim_y <- c(0, max(5, 1.08 * max(base$pobreza_mpi, 0)))
 
   subtitulo <-
-    if (nrow(base) == 0) {
-      paste0("En ", anio, " ningún país tiene las dos medidas (el MPI empieza en ",
-             rango_mpi[1], ")")
-    } else if (is.null(pais)) {
-      "Haz clic en un punto o en un país del mapa"
-    } else if (nrow(sel) == 0) {
-      paste0(pais, ": no tiene datos de las dos medidas en ", anio)
+    if (n == 0) {
+      paste0("Hasta ", anio, " ningún país de ", ambito, " tiene las dos medidas",
+             " (el MPI empieza en ", rango_mpi[1], ")")
+    } else if (!is.null(codigo) && nrow(sel) == 0) {
+      paste0(nombre_pais(codigo), ": no tiene las dos medidas hasta ", anio,
+             ", por eso no aparece en la regresión")
+    } else if (n < min_paises_reg) {
+      paste0("Solo ", n, " países tienen las dos medidas: muy pocos para calcular la regresión")
+    } else if (is.null(codigo)) {
+      "Cursor sobre un punto: ver el país. Clic: seleccionarlo"
     } else {
       NULL   # el país ya se ve en la etiqueta del punto
     }
 
+  nota_r <- if (n >= min_paises_reg) {
+    sprintf("n = %d países, r = %.2f (correlación, no causalidad).\n", n,
+            cor(base$pobreza_mon, base$pobreza_mpi))
+  } else ""
+
   p <- ggplot(base, aes(x = pobreza_mon, y = pobreza_mpi))
 
-  if (nrow(base) >= 3) {
+  if (n >= min_paises_reg) {
     p <- p + geom_smooth(method = "lm", formula = y ~ x, se = TRUE,
                          color = "#3B0F70", fill = "#DCC9E8", linewidth = 0.8)
   }
 
   p +
-    geom_point(aes(color = pobreza_mon), alpha = 0.85, size = 2.4) +
-    # mismos colores que el mapa; end = 0.85 evita que los puntos claros se pierdan en el fondo
-    scale_color_viridis_c(option = "magma", direction = -1, end = 0.85,
-                          limits = lim_x, guide = "none") +
+    # mismo color que el intervalo de pobreza monetaria del mapa, con borde
+    # para que los tonos claros no se pierdan en el fondo blanco
+    geom_point(aes(fill = pal_mon(pobreza_mon)), shape = 21, color = "grey25",
+               stroke = 0.3, alpha = 0.9, size = 2.6) +
+    scale_fill_identity() +
     geom_point(data = sel, shape = 21, fill = "#FE9F6D", color = "#000004",
                size = 6, stroke = 1.6) +
     geom_label(data = sel, aes(label = name_en), color = "#000004",
                fontface = "bold", vjust = -0.9, linewidth = 0, alpha = 0.85) +
-    coord_cartesian(xlim = lim_x, ylim = lim_y) +
+    coord_cartesian(xlim = lim_x, ylim = lim_y, clip = "off") +
     labs(subtitle = subtitulo,
          x = "% de la población en pobreza extrema",
          y = "Índice de pobreza multidimensional (%)",
-         caption = paste0("Fuente: Our World in Data. Último dato disponible de cada país hasta ", anio, ".")) +
+         caption = paste0(nota_r,
+                          "Último dato observado de cada indicador hasta ", anio, ";\n",
+                          "los dos pueden ser de años distintos. Fuente: Our World in Data.")) +
     theme_minimal(base_size = 14) +
     theme(plot.subtitle = element_text(color = "grey30"),
           plot.caption = element_text(color = "grey50"),
           panel.grid.minor = element_blank())
+}
+
+# ---- Tooltip (hover) de las gráficas de dispersión ----
+# Texto del tooltip; mpi en escala 0 a 1 (índice)
+texto_tooltip <- function(nombre, mon, anio_mon, mpi, anio_mpi) {
+  sprintf("<b>%s</b><br/>Pobreza monetaria: %.1f%% (%s)<br/>MPI: %.3f (%s)",
+          htmltools::htmlEscape(nombre), mon, anio_mon, mpi, anio_mpi)
+}
+
+# Busca el punto más cercano al cursor (máximo 8 px) y arma un recuadro
+# flotante junto a él. Si no hay punto cerca, no muestra nada.
+tooltip_punto <- function(hover, df, xvar, yvar, texto) {
+  if (is.null(hover) || is.null(df) || nrow(df) == 0) return(NULL)
+  p <- nearPoints(df, hover, xvar = xvar, yvar = yvar, threshold = 8, maxpoints = 1)
+  if (nrow(p) == 0) return(NULL)
+  x <- hover$coords_css$x
+  y <- hover$coords_css$y
+  # en la mitad derecha de la gráfica el recuadro va a la izquierda del cursor
+  ancho <- tryCatch(hover$range$right / hover$img_css_ratio$x, error = function(e) Inf)
+  izq <- isTRUE(x > 0.55 * ancho)
+  estilo <- sprintf("left:%.0fpx; top:%.0fpx; transform:translate(%s, -50%%);",
+                    if (izq) x - 14 else x + 14, y, if (izq) "-100%" else "0")
+  div(class = "tooltip-punto", style = estilo, HTML(texto(p)))
 }
 ```
 
@@ -488,12 +579,7 @@ color_texto <- function(x, trans = identity, umbral = 0.45) {
   ifelse((z - min(z)) / (max(z) - min(z)) > umbral, "white", "black")
 }
 
-# 1) Tamaño = % de pobreza extrema, color = población
-tm_poblacion <- pob_2018 |>
-  filter(!is.na(pobreza), pobreza > 0, !is.na(Population)) |>
-  mutate(txt = color_texto(Population, log10))
-
-# 2) Tamaño = PIB, color = % de pobreza extrema
+# 1) Tamaño = PIB, color = % de pobreza extrema
 tm_extrema <- mundo |>
   st_drop_geometry() |>
   filter(adm0_a3 != "ATA") |>
@@ -502,7 +588,7 @@ tm_extrema <- mundo |>
   filter(gdp_md > 0, pobreza > 0) |>
   mutate(txt = color_texto(pobreza))
 
-# 3) Tamaño = PIB, color = índice de pobreza multidimensional (MPI)
+# 2) Tamaño = PIB, color = índice de pobreza multidimensional (MPI)
 tm_mf <- mundo |>
   st_drop_geometry() |>
   filter(adm0_a3 != "ATA") |>
@@ -514,7 +600,7 @@ tm_mf <- mundo |>
   filter(gdp_md > 0, pobreza > 0) |>
   mutate(txt = color_texto(pobreza))
 
-# Capas comunes a los tres treemaps
+# Capas comunes a los dos treemaps
 capas_treemap <- list(
   geom_treemap(color = "grey55", size = 0.3),
   geom_treemap_subgroup_border(color = "grey15", size = 2),
@@ -534,17 +620,7 @@ capas_treemap <- list(
 )
 
 graficar_treemap <- function(tipo) {
-  if (tipo == "poblacion") {
-    # Viridis invertida para población (amarillo = menos, morado = más)
-    ggplot(tm_poblacion, aes(area = pobreza, fill = Population, colour = txt,
-                             label = Entity, subgroup = region)) +
-      capas_treemap +
-      scale_fill_viridis_c(option = "viridis", direction = -1, trans = "log10",
-                    name = "Población (más oscuro = más habitantes)",
-                    labels = label_number(scale_cut = cut_short_scale())) +
-      labs(title = "Pobreza extrema por región en 2018, coloreado por población",
-           caption = "Tamaño: % de la población en pobreza extrema. Color en escala logarítmica.\nFuente: Elaboración propia con datos de Our World in Data")
-  } else if (tipo == "extrema") {
+  if (tipo == "extrema") {
     # Misma paleta que el mapa: claro = poca pobreza, oscuro = mucha
     ggplot(tm_extrema, aes(area = gdp_md, fill = pobreza, colour = txt,
                            label = Entity, subgroup = region)) +
@@ -565,217 +641,108 @@ graficar_treemap <- function(tipo) {
 }
 ```
 
-# Población por año: funciones de los mapas
-
-```{r}
-# Escala fija global (misma para todos los años)
-# (antes incluía desde el año -10000, y eso comprimía los colores de hoy)
-lim_pob <- range(ext_pob$poblacion[ext_pob$anio %in% anios], na.rm = TRUE)
-
-grafica_pob <- function(anio_sel) {
-  pobreza_ex <- ext_pob %>% filter(anio == anio_sel)
-  mundo_pobreza <- mundo %>%
-    filter(adm0_a3 != "ATA") %>%
-    left_join(pobreza_ex, by = c("adm0_a3" = "Code"))
-
-  ggplot(mundo_pobreza) +
-    geom_sf(aes(fill = poblacion), color = "white", linewidth = 0.1) +
-    scale_fill_viridis_c(
-      option = "viridis", direction = -1, trans = "log10",
-      limits = lim_pob,                      # <- fija para todos los años
-      na.value = "grey88", name = "Población",
-      breaks = c(1e5, 1e6, 1e7, 1e8, 1e9),
-      labels = label_number(scale_cut = cut_short_scale())
-    ) +
-    coord_sf(crs = "+proj=robin") +
-    labs(title = paste("Población mundial en", anio_sel)) +
-    theme_void(base_size = 12) +
-    theme(plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
-          legend.position = "bottom",
-          legend.key.width = unit(2.5, "cm"),
-          legend.key.height = unit(0.3, "cm"))
-}
-
-# Mapa de cambio % entre año base y año seleccionado
-grafica_cambio <- function(anio_base, anio_sel) {
-  base <- ext_pob %>% filter(anio == anio_base) %>%
-    select(Code, pob_base = poblacion)
-  sel  <- ext_pob %>% filter(anio == anio_sel) %>%
-    select(Code, pob_sel = poblacion)
-
-  datos <- mundo %>%
-    filter(adm0_a3 != "ATA") %>%
-    left_join(base, by = c("adm0_a3" = "Code")) %>%
-    left_join(sel,  by = c("adm0_a3" = "Code")) %>%
-    mutate(cambio = (pob_sel / pob_base - 1) * 100)
-
-  ggplot(datos) +
-    geom_sf(aes(fill = cambio), color = "white", linewidth = 0.1) +
-    scale_fill_gradient2(
-      low = "#2166ac", mid = "white", high = "#b2182b", midpoint = 0,
-      limits = c(-50, 250), oob = scales::squish,   # recorta extremos
-      na.value = "grey88", name = "Cambio (%)"
-    ) +
-    coord_sf(crs = "+proj=robin") +
-    labs(title = paste0("Cambio de población: ", anio_base, " → ", anio_sel)) +
-    theme_void(base_size = 12) +
-    theme(plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
-          legend.position = "bottom",
-          legend.key.width = unit(2.5, "cm"),
-          legend.key.height = unit(0.3, "cm"))
-}
-```
-
 # Aplicación shiny
 
 ```{r}
 
+  # Gráfica con tooltip al pasar el cursor: plotOutput con evento hover y un
+  # recuadro (uiOutput) encima. El hover usa el id "<id>_hover" y el recuadro "<id>_tip".
+  grafica_con_hover <- function(id, height, click) {
+    div(class = "contenedor-hover",
+        plotOutput(id, height = height, click = click,
+                   hover = hoverOpts(paste0(id, "_hover"), delay = 120,
+                                     delayType = "debounce", nullOutside = TRUE)),
+        uiOutput(paste0(id, "_tip")))
+  }
+
   # Caja con encabezado (título) y pie (fuente) para el cuadro de mando
-  # El argumento click permite añadir interactividad cuando sea necesario
-  caja_cm <- function(titulo, id, pie = fuente_pip, click = NULL) {
+  # El argumento click permite añadir interactividad (y hover = TRUE el tooltip)
+  caja_cm <- function(titulo, id, pie = fuente_pip, click = NULL, hover = FALSE) {
+    grafica <- if (hover) grafica_con_hover(id, "360px", click)
+               else plotOutput(id, click = click, height = "360px")
     box(title = titulo, width = 6, status = "primary", solidHeader = TRUE,
-        plotOutput(id, click = click, height = "360px"),
+        grafica,
         footer = tags$small(pie, style = "color: #777;"))
   }
 
   # Mapa base: un solo mundo (sin copias infinitas a los lados) y sin poder
   # arrastrarlo fuera de sus límites. Se dibuja una vez; lo demás va por leafletProxy.
-  mapa_base <- function() {
-    leaflet(options = leafletOptions(
+  # El panel "seleccion" queda encima de los países para el contorno del país elegido.
+  # encuadre = c(lng1, lat1, lng2, lat2) para empezar en un continente.
+  mapa_base <- function(encuadre = NULL) {
+    m <- leaflet(options = leafletOptions(
       minZoom = 2, worldCopyJump = FALSE,
       maxBounds = list(c(-85, -180), c(85, 180)),
       maxBoundsViscosity = 1
     )) |>
       addTiles(options = tileOptions(noWrap = TRUE)) |>
-      setView(lng = 0, lat = 20, zoom = 2)
-  }
-
-  # Geometría fija del mapa de población (sin Antártida)
-  geo_pob <- mundo |>
-    filter(adm0_a3 != "ATA") |>
-    select(adm0_a3, name_en)
-
-  # Colores, textos y leyenda del mapa de población para el año elegido
-  # (nivel o cambio % vs año base). Los países van en el orden de geo_pob.
-  estado_poblacion <- function(anio_sel, tipo, anio_base = NULL) {
-    if (tipo == "nivel") {
-      d <- geo_pob |>
-        st_drop_geometry() |>
-        left_join(filter(ext_pob, anio == anio_sel) |> select(Code, poblacion),
-                  by = c("adm0_a3" = "Code"))
-
-      pob <- ifelse(is.na(d$poblacion), "Sin dato",
-                    format(round(d$poblacion), big.mark = ",",
-                           scientific = FALSE))
-      texto <- sprintf("<strong>%s</strong><br/>Año: %s<br/>Población: %s",
-                       d$name_en, anio_sel, pob)
-
-      # Misma escala logarítmica y colores que el mapa original
-      pal <- colorNumeric(
-        palette = viridisLite::viridis(256, direction = -1),
-        domain = log10(lim_pob),
-        na.color = gris_na
-      )
-
-      leyenda <- function(mapa) {
-        addLegend(mapa,
-          colors = pal(log10(c(1e5, 1e6, 1e7, 1e8, 1e9))),
-          labels = c("100 mil", "1 millón", "10 millones",
-                     "100 millones", "1,000 millones"),
-          title = "Población",
-          position = "bottomleft"
-        )
-      }
-      colores <- pal(log10(d$poblacion))
-
+      addMapPane("seleccion", zIndex = 450)
+    if (is.null(encuadre)) {
+      setView(m, lng = 0, lat = 20, zoom = 2)
     } else {
-      base <- ext_pob |>
-        filter(anio == anio_base) |>
-        select(Code, pob_base = poblacion)
-      sel <- ext_pob |>
-        filter(anio == anio_sel) |>
-        select(Code, pob_sel = poblacion)
-
-      d <- geo_pob |>
-        st_drop_geometry() |>
-        left_join(base, by = c("adm0_a3" = "Code")) |>
-        left_join(sel, by = c("adm0_a3" = "Code")) |>
-        mutate(cambio = (pob_sel / pob_base - 1) * 100)
-
-      fmt_pob <- function(x) ifelse(is.na(x), "Sin dato",
-                                    format(round(x), big.mark = ",", scientific = FALSE))
-      cambio <- ifelse(is.na(d$cambio), "Sin dato", paste0(round(d$cambio, 2), "%"))
-
-      texto <- sprintf(
-        paste0("<strong>%s</strong><br/>",
-               "Población en %s: %s<br/>",
-               "Población en %s: %s<br/>",
-               "Cambio: %s"),
-        d$name_en, anio_base, fmt_pob(d$pob_base),
-        anio_sel, fmt_pob(d$pob_sel), cambio
-      )
-
-      # Escala continua del cambio más pequeño al más grande (sin bins ni recortes).
-      # Divergente: azul = bajó, blanco = 0%, rojo = subió.
-      lo <- min(c(d$cambio, 0), na.rm = TRUE)
-      hi <- max(c(d$cambio, 0), na.rm = TRUE)
-      if (lo == hi) hi <- lo + 1   # mismo año base y seleccionado: todo es 0%
-      colores_esc <- if (lo == 0) c("white", "#b2182b") else c("#2166ac", "white", "#b2182b")
-      posic       <- if (lo == 0) c(0, 1) else scales::rescale(c(lo, 0, hi))
-      if (hi == 0) { colores_esc <- c("#2166ac", "white"); posic <- c(0, 1) }
-
-      pal <- colorNumeric(
-        palette = scales::gradient_n_pal(colores_esc, values = posic),
-        domain = c(lo, hi),
-        na.color = gris_na
-      )
-
-      leyenda <- function(mapa) {
-        addLegend(mapa,
-          pal = pal, values = c(lo, hi), bins = 5,
-          labFormat = labelFormat(suffix = "%"),
-          title = "Cambio de población (%)",
-          position = "bottomleft"
-        )
-      }
-      colores <- pal(d$cambio)
+      fitBounds(m, encuadre[["lng1"]], encuadre[["lat1"]], encuadre[["lng2"]], encuadre[["lat2"]])
     }
-
-    list(ids = d$adm0_a3, colores = colores, texto = texto, leyenda = leyenda)
   }
 
-  # Dibuja los polígonos de población UNA sola vez (después solo se recolorean)
-  capa_poblacion <- function(mapa, est) {
-    mapa |>
-      addPolygons(
-        data = geo_pob, group = "pob_paises", layerId = ~adm0_a3,
-        fillColor = est$colores, fillOpacity = 0.9,
-        weight = 0.5, color = "white",
-        label = lapply(est$texto, htmltools::HTML),
-        popup = est$texto,
-        highlightOptions = resaltado
-      ) |>
-      est$leyenda()
+  # Al elegir MPI el año mínimo es el de sus encuestas (2014); se ajusta el slider
+  ajustar_slider <- function(session, id, tipo, valor) {
+    rng <- if (tipo == "mpi") rango_mpi_mapa else rango_mon_mapa
+    updateSliderInput(session, id, min = rng[1], max = rng[2],
+                      value = min(max(valor, rng[1]), rng[2]))
+  }
+
+  # Texto bajo el slider: aclara que el año es un límite
+  texto_resumen <- function(d, tipo, anio) {
+    n <- sum(!is.na(valor_mapa(d, tipo)))
+    helpText(paste0("Año límite: ", anio, ". Cada país muestra su último dato observado ",
+                    "hasta ese año, que puede ser de un año anterior. ",
+                    n, " países con dato."))
+  }
+
+  selector_tipo <- function(id) {
+    radioButtons(id, label = NULL,
+                 choices = c("Pobreza monetaria" = "mon",
+                             "Pobreza multidimensional" = "mpi"),
+                 selected = "mon", inline = TRUE)
+  }
+
+  selector_anio <- function(id) {
+    sliderInput(id, "Año límite:",
+                min = rango_mon_mapa[1], max = rango_mon_mapa[2],
+                value = anio_ultimo_obs, step = 1, sep = "",
+                width = "100%",
+                animate = animationOptions(interval = 800))
   }
 
 ui <- dashboardPage(
   dashboardHeader(title = "Pobreza"),
   dashboardSidebar(
     sidebarMenu(
-      menuItem("Cuadro de mando",     tabName = "cuadroM",   icon = icon("gauge-high")),
-      menuItem("Pobreza en el mundo", tabName = "pobreza",   icon = icon("map-location-dot")),
-      menuItem("Pobreza en regiones", tabName = "treeMap",   icon = icon("table-cells-large")),
-      menuItem("Población por año",   tabName = "poblacion", icon = icon("earth-americas"))
+      menuItem("Cuadro de mando",         tabName = "cuadroM",    icon = icon("gauge-high")),
+      menuItem("Pobreza en el mundo",     tabName = "pobreza",    icon = icon("map-location-dot")),
+      menuItem("Análisis por continente", tabName = "continente", icon = icon("earth-americas")),
+      menuItem("Pobreza en regiones",     tabName = "treeMap",    icon = icon("table-cells-large"))
     )
   ),
   dashboardBody(
-    # Que los títulos largos de las cajas bajen de renglón en vez de cortarse
     tags$head(
       tags$style(HTML(
-        ".box-header .box-title { white-space: normal; line-height: 1.3; }
-         /* Transición suave del color de los países al cambiar de año o medida */
+        "/* Que los títulos largos de las cajas bajen de renglón en vez de cortarse */
+         .box-header .box-title { white-space: normal; line-height: 1.3; }
+         /* Transición suave del color de los países al cambiar de año o medida
+            (más corta que el intervalo de la animación, 800 ms) */
          .leaflet-container path.leaflet-interactive {
-           transition: fill 0.9s ease-in-out;
+           transition: fill 0.5s ease-in-out, fill-opacity 0.5s ease-in-out;
+         }
+         /* Tooltip de las gráficas de dispersión: no intercepta el ratón,
+            así no interfiere con el hover ni con el clic */
+         .contenedor-hover { position: relative; }
+         .tooltip-punto {
+           position: absolute; z-index: 100; pointer-events: none;
+           background: rgba(255,255,255,0.96); border: 1px solid #bbb;
+           border-radius: 4px; padding: 6px 9px; font-size: 13px;
+           line-height: 1.4; white-space: nowrap;
+           box-shadow: 0 2px 6px rgba(0,0,0,0.18);
          }"
       )),
       # Recibe los colores nuevos desde R y se los aplica a los polígonos que
@@ -788,9 +755,8 @@ ui <- dashboardPage(
           for (var i = 0; i < m.ids.length; i++) {
             var capa = capas.getLayer('shape', m.ids[i]);
             if (!capa) continue;
-            capa.setStyle({ fillColor: m.colores[i] });
+            capa.setStyle({ fillColor: m.colores[i], fillOpacity: m.opacidades[i] });
             if (capa.getTooltip()) capa.setTooltipContent(m.etiquetas[i]);
-            if (capa.getPopup())   capa.setPopupContent(m.popups[i]);
           }
         });
       "))
@@ -803,29 +769,49 @@ ui <- dashboardPage(
         ),
         fluidRow(
           caja_cm(tit_mundial, "cm_mundial"),
-          caja_cm(tit_mpi, "cm_mpi", click = "clic_cm_mpi")
+          caja_cm(tit_mpi, "cm_mpi", click = "clic_cm_mpi", hover = TRUE)
         )
       ),
       tabItem("pobreza",
         fluidRow(
-          box(title = "Pobreza por país: dato más reciente hasta el año elegido",
+          box(title = "Pobreza por país: último dato observado hasta el año elegido",
               width = 6, status = "primary", solidHeader = TRUE,
-              radioButtons("tipo_pobreza", label = NULL,
-                           choices = c("Pobreza monetaria" = "mon",
-                                       "Pobreza multidimensional" = "mpi"),
-                           selected = "mon", inline = TRUE),
-              sliderInput("anio_mapa", "Año:",
-                          min = rango_mon[1], max = rango_mon[2],
-                          value = anio_ultimo_obs, step = 1, sep = "",
-                          width = "100%",
-                          animate = animationOptions(interval = 1600)),
+              selector_tipo("tipo_pobreza"),
+              selector_anio("anio_mapa"),
               uiOutput("resumen_mapa"),
               leafletOutput("mapa", height = 440),
-              footer = tags$small("Fuente: Our World in Data. Haz clic en un país para ver su ficha y resaltarlo en la gráfica.",
+              footer = tags$small("Fuente: Our World in Data. Haz clic en un país para acercarte, ver su ficha y resaltarlo en la gráfica.",
                                   style = "color: #777;")),
           box(title = "Pobreza extrema vs pobreza multidimensional",
               width = 6, status = "primary", solidHeader = TRUE,
-              plotOutput("grafica", click = "clic_grafica", height = 640))
+              grafica_con_hover("grafica", 640, "clic_grafica"))
+        )
+      ),
+      tabItem("continente",
+        fluidRow(
+          box(width = 12, status = "primary",
+            column(4, selectInput("continente", "Continente:",
+                                  choices = continentes, selected = "Africa")),
+            column(3, tags$label("Medida del mapa:"), selector_tipo("tipo_cont")),
+            column(5, selector_anio("anio_cont")),
+            column(12, uiOutput("resumen_cont"))
+          )
+        ),
+        fluidRow(
+          box(title = "Mapa del continente",
+              width = 6, status = "primary", solidHeader = TRUE,
+              leafletOutput("mapa_cont", height = 560),
+              footer = tags$small("Haz clic en un país para acercarte, ver su ficha y resaltarlo en la gráfica.",
+                                  style = "color: #777;")),
+          box(title = "Pobreza monetaria vs multidimensional en el continente",
+              width = 6, status = "primary", solidHeader = TRUE,
+              grafica_con_hover("grafica_cont", 560, "clic_grafica_cont"),
+              footer = tags$small(
+                "La regresión usa solo los países del continente con las dos medidas. ",
+                "Cada indicador es el último dato observado hasta el año límite, y los dos ",
+                "pueden venir de años distintos para un mismo país. La recta describe una ",
+                "asociación, no una relación causal.",
+                style = "color: #777;"))
         )
       ),
       tabItem("treeMap",
@@ -833,40 +819,9 @@ ui <- dashboardPage(
           box(plotOutput("tree", height = 620), width = 9),
           box(
             radioButtons("color_tree", "Color:",
-                         c("Población" = "poblacion",
-                           "Pobreza multidimensional" = "mf",
+                         c("Pobreza multidimensional" = "mf",
                            "Pobreza extrema" = "extrema")),
             uiOutput("nota_tree"),
-            width = 3
-          )
-        )
-      ),
-      tabItem("poblacion",
-        fluidRow(
-          box(
-              title = "Población por país",
-              width = 9,
-              status = "primary",
-              solidHeader = TRUE,
-              leafletOutput("pob", height = 640),
-              footer = tags$small(
-                "Fuente: Our World in Data. ",
-                "Pasa el cursor sobre un país para consultar su población.",
-                style = "color: #777;"
-              )
-            ),
-          box(
-            radioButtons("tipo", "Mostrar:",
-                         c("Población" = "nivel", "Cambio % vs año base" = "cambio")),
-           sliderTextInput("anio", "Año:",
-                choices = anios, selected = max(anios),
-                grid = TRUE,
-                animate = animationOptions(interval = 1600)),
-          conditionalPanel(
-            "input.tipo == 'cambio'",
-            selectInput("anio_base", "Año base:",
-                        choices = anios, selected = min(anios))
-          ),
             width = 3
           )
         )
@@ -906,6 +861,15 @@ server <- function(input, output, session) {
   # Actualiza la gráfica con el país seleccionado
   output$cm_mpi <- renderPlot(g_mpi(pais_cm_mpi()), res = 96)
 
+  # Hover: solo muestra el país (no lo selecciona)
+  output$cm_mpi_tip <- renderUI(
+    tooltip_punto(input$cm_mpi_hover, comparacion, "mpi", "pobreza",
+                  function(p) texto_tooltip(p$pais, p$pobreza, p$anio, p$mpi, p$anio_mpi)))
+
+  # Texto del tooltip para las dos gráficas de los mapas (MPI de vuelta a 0-1)
+  texto_corr <- function(p) {
+    texto_tooltip(p$name_en, p$pobreza_mon, p$anio_mon, p$pobreza_mpi / 100, p$anio_mpi)
+  }
 
   # ---- Pobreza en el mundo ----
   # Valores vigentes en el año elegido (se recalcula al mover el slider)
@@ -929,17 +893,12 @@ server <- function(input, output, session) {
 
   # El MPI solo tiene encuestas desde 2014: ajusta el rango del slider
   observeEvent(input$tipo_pobreza, {
-    rng <- if (input$tipo_pobreza == "mpi") rango_mpi else rango_mon
-    updateSliderInput(session, "anio_mapa", min = rng[1], max = rng[2],
-                      value = min(max(input$anio_mapa, rng[1]), rng[2]))
+    ajustar_slider(session, "anio_mapa", input$tipo_pobreza, input$anio_mapa)
   }, ignoreInit = TRUE)
 
   # Al cambiar el año o la medida solo se recolorean los países (con transición)
   observeEvent(list(datos_sel(), input$tipo_pobreza), {
-    d  <- datos_sel()
-    tx <- textos_mapa(d)
-    recolorear("mapa", d$adm0_a3, colores_mapa(d, input$tipo_pobreza),
-               tx$etiqueta, tx$popup)
+    recolorear("mapa", datos_sel(), input$tipo_pobreza)
     leafletProxy("mapa") |> clearPopups()   # la ficha abierta tendría datos de otro año
   }, ignoreInit = TRUE)
 
@@ -950,65 +909,127 @@ server <- function(input, output, session) {
       leyenda_mapa(input$tipo_pobreza)
   }, ignoreInit = TRUE)
 
-  output$resumen_mapa <- renderUI({
-    d <- datos_sel()
-    n <- sum(!is.na(if (input$tipo_pobreza == "mon") d$pobreza_mon else d$pobreza_mpi))
-    helpText(paste0(n, " países con dato hasta ", input$anio_mapa,
-                    " (se muestra el último dato observado de cada uno)."))
-  })
+  output$resumen_mapa <- renderUI(
+    texto_resumen(datos_sel(), input$tipo_pobreza, input$anio_mapa))
 
+  # País seleccionado (código ISO). El clic en el mapa y en la gráfica pasan
+  # por la misma función, así las dos vistas nunca quedan inconsistentes.
   pais_sel <- reactiveVal(NULL)
 
-  # Clic en un país del mapa: se abre su ficha (popup) y se resalta en la gráfica
+  seleccionar_mundo <- function(codigo) {
+    pais_sel(codigo)
+    leafletProxy("mapa") |> zoom_pais(codigo, datos_sel())
+  }
+
   observeEvent(input$mapa_shape_click, {
-    pais_sel(mundo_geo$name_en[match(input$mapa_shape_click$id, mundo_geo$adm0_a3)])
+    req(input$mapa_shape_click$id)
+    seleccionar_mundo(input$mapa_shape_click$id)
   })
 
-  # Clic en un punto de la gráfica
   observeEvent(input$clic_grafica, {
     punto <- nearPoints(base_corr_sel(), input$clic_grafica,
                         xvar = "pobreza_mon", yvar = "pobreza_mpi",
                         threshold = 10, maxpoints = 1)
-    if (nrow(punto) == 1) {
-      pais_sel(punto$name_en)
-      leafletProxy("mapa") |> zoom_pais(punto$name_en, datos_sel())
-    }
+    if (nrow(punto) == 1) seleccionar_mundo(punto$adm0_a3)
   })
 
   output$grafica <- renderPlot(
-    grafica_correlacion(pais_sel(), base_corr_sel(), input$anio_mapa),
+    grafica_correlacion(pais_sel(), base_corr_sel(), input$anio_mapa, lim_x, lim_y),
     res = 96)
+
+  output$grafica_tip <- renderUI(
+    tooltip_punto(input$grafica_hover, base_corr_sel(),
+                  "pobreza_mon", "pobreza_mpi", texto_corr))
+
+  # ---- Análisis por continente ----
+  # Mismo cálculo que el mapa mundial, filtrado a los países del continente
+  datos_cont <- reactive({
+    req(input$anio_cont, input$continente)
+    d <- datos_anio(input$anio_cont)
+    d[d$continent == input$continente, ]
+  })
+
+  # La regresión se calcula SOLO con estos países
+  base_cont <- reactive({
+    datos_cont() |>
+      st_drop_geometry() |>
+      filter(!is.na(pobreza_mon), !is.na(pobreza_mpi))
+  })
+
+  pais_cont <- reactiveVal(NULL)
+
+  # Se crea una vez, ya encuadrado en el continente inicial
+  output$mapa_cont <- renderLeaflet({
+    mapa_base(encuadres_cont[[isolate(input$continente)]]) |>
+      agregar_capa(isolate(datos_cont()), isolate(input$tipo_cont))
+  })
+
+  # Cambio de continente: se reemplazan los países, se reencuadra y se
+  # reinicia la selección (el país anterior ya no está en el mapa)
+  observeEvent(input$continente, {
+    pais_cont(NULL)
+    e <- encuadres_cont[[input$continente]]
+    leafletProxy("mapa_cont") |>
+      quitar_seleccion() |>
+      clearGroup("paises") |>
+      clearControls() |>
+      agregar_capa(datos_cont(), input$tipo_cont) |>
+      flyToBounds(e[["lng1"]], e[["lat1"]], e[["lng2"]], e[["lat2"]])
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$tipo_cont, {
+    ajustar_slider(session, "anio_cont", input$tipo_cont, input$anio_cont)
+    leafletProxy("mapa_cont") |>
+      clearControls() |>
+      leyenda_mapa(input$tipo_cont)
+  }, ignoreInit = TRUE)
+
+  # Cambio de año o medida: solo se recolorean los países del continente
+  observeEvent(list(input$anio_cont, input$tipo_cont), {
+    req(input$anio_cont)
+    recolorear("mapa_cont", datos_cont(), input$tipo_cont)
+    leafletProxy("mapa_cont") |> clearPopups()
+  }, ignoreInit = TRUE)
+
+  output$resumen_cont <- renderUI(
+    texto_resumen(datos_cont(), input$tipo_cont, input$anio_cont))
+
+  seleccionar_cont <- function(codigo) {
+    pais_cont(codigo)
+    leafletProxy("mapa_cont") |> zoom_pais(codigo, datos_cont())
+  }
+
+  observeEvent(input$mapa_cont_shape_click, {
+    req(input$mapa_cont_shape_click$id)
+    seleccionar_cont(input$mapa_cont_shape_click$id)
+  })
+
+  observeEvent(input$clic_grafica_cont, {
+    punto <- nearPoints(base_cont(), input$clic_grafica_cont,
+                        xvar = "pobreza_mon", yvar = "pobreza_mpi",
+                        threshold = 10, maxpoints = 1)
+    if (nrow(punto) == 1) seleccionar_cont(punto$adm0_a3)
+  })
+
+  # Ejes calculados con los países del continente (sin límites fijos)
+  output$grafica_cont <- renderPlot(
+    grafica_correlacion(pais_cont(), base_cont(), input$anio_cont,
+                        ambito = names(continentes)[continentes == input$continente]),
+    res = 96)
+
+  output$grafica_cont_tip <- renderUI(
+    tooltip_punto(input$grafica_cont_hover, base_cont(),
+                  "pobreza_mon", "pobreza_mpi", texto_corr))
 
   # ---- Treemap ----
   output$tree <- renderPlot(graficar_treemap(input$color_tree), res = 96)
 
   output$nota_tree <- renderUI({
     texto <- switch(input$color_tree,
-      poblacion = "Tamaño: % de la población en pobreza extrema (2018). Color: población del país (más oscuro = más habitantes).",
       extrema   = "Tamaño: PIB del país. Color: % de la población en pobreza extrema (2018); más oscuro = más pobreza.",
       mf        = "Tamaño: PIB del país. Color: índice de pobreza multidimensional (MPI), último año de encuesta; más oscuro = más pobreza.")
     helpText(texto)
   })
-
-  # ---- Población por año ----
-  # El mapa se crea una sola vez (con los valores iniciales, sin dependencias)
-  output$pob <- renderLeaflet({
-    est <- estado_poblacion(as.numeric(isolate(input$anio)), isolate(input$tipo),
-                            as.numeric(isolate(input$anio_base)))
-    mapa_base() |> capa_poblacion(est)
-  })
-
-  # Al cambiar año, tipo o año base: se recolorean los países (con transición)
-  # y se reemplaza solo la leyenda
-  observeEvent(list(input$anio, input$tipo, input$anio_base), {
-    req(input$anio, input$tipo, input$anio_base)
-    est <- estado_poblacion(as.numeric(input$anio), input$tipo,
-                            as.numeric(input$anio_base))
-    recolorear("pob", est$ids, est$colores, est$texto, est$texto)
-    leafletProxy("pob") |>
-      clearControls() |>
-      est$leyenda()
-  }, ignoreInit = TRUE)
 }
 
 shinyApp(ui, server)
